@@ -48,7 +48,7 @@ jobs:
           make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- dtbs Image zImage modules -j$(nproc)
           make ARCH=arm  CROSS_COMPILE=arm-linux-gnueabi-  modules_install    INSTALL_MOD_PATH=${{ env.src_path }}/modules
           cat arch/arm/boot/zImage arch/arm/boot/dts/hi3798mv100-ec6108v9c.dtb > zImage-dtb
-          mkimage -A arm -O linux -T kernel -C none -a 0x2000000 -e 0x2000000 -n "Linux-${{ env.kernel_main_version }}" -d kernel-dtb hi_kernel-${{ env.kernel_main_version }}-mv100.bin
+          mkimage -A arm -O linux -T kernel -C none -a 0x2000000 -e 0x2000000 -n "Linux-${{ env.kernel_main_version }}" -d zImage-dtb hi_kernel-${{ env.kernel_main_version }}-mv100.bin
           
 
 
