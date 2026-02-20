@@ -61,7 +61,7 @@ jobs:
       - name: Compression firmware
         run: |
           cd   ${{ env.src_path }}
-          tar -zcf hisi3798mv100_firmware.tar.gz  firmware
+          tar -zcf hisi3798mv100_firmware.tar.gz  hi3798mv100_firmware
 
       - name: Build and Compression Kernel-headers
         run: |
