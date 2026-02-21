@@ -83,7 +83,7 @@ jobs:
       - name: Upload Kernel to Release
         uses: ncipollo/release-action@v1
         with:
-          tag: ${{ github.event.inputs.target_tag }}
+          tag: ${{ github.ref_name || format('v{0}', env.kernel_main_version) }}
           name: "hisi3798mv100 Kernel ${{ env.kernel_main_version }}"
           artifacts: |
             ${{ env.src_path }}/hi_kernel-${{ env.kernel_main_version }}-mv100.bin
