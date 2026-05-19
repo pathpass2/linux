@@ -1,0 +1,114 @@
+name: Build hisi3798mv100_v6.3.0-rc5
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_tag:
+        description: 'Source tag to build from'
+        required: true
+        default: 'hisi3798mv100_v6.3.0-rc5'
+                
+env:
+  ARCH: arm
+  src_path: ${{ github.workspace }}
+
+    
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - name: Checkout source tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.target_tag }}
+          submodules: true
+          fetch-depth: 0
+          persist-credentials: false
+        
+      - name: Initialization environment
+        id: init
+        run: |
+          sudo -E apt-get -y update
+          sudo -E apt-get -y install gcc make gettext bison flex bc zlib1g-dev libncurses5-dev lzma libssl-dev gcc-arm-linux-gnueabi git gcc-arm-linux-gnueabihf u-boot-tools
+
+
+      - name: Get Kernel Version
+        run: |
+          echo "kernel_main_version=$(make kernelversion)" >> $GITHUB_ENV
+          echo  "modules_path=${{ env.src_path }}/modules/lib/modules" >> $GITHUB_ENV
+
+
+          
+      - name: make build
+        run: |
+          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- hi3798mv100_defconfig
+          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- dtbs Image zImage modules -j$(nproc)
+          make ARCH=arm  CROSS_COMPILE=arm-linux-gnueabi-  modules_install    INSTALL_MOD_PATH=${{ env.src_path }}/modules
+          cat arch/arm/boot/zImage arch/arm/boot/dts/hi3798mv100-ec6108v9c.dtb > zImage-dtb
+          mkimage -A arm -O linux -T kernel -C none -a 0x2000000 -e 0x2000000 -n "Linux-${{ env.kernel_main_version }}" -d zImage-dtb hi_kernel-${{ env.kernel_main_version }}-mv100.bin
+          
+
+
+      - name: Compression modules
+        run: |
+          cd  ${{ env.modules_path }}/${{ env.kernel_main_version }}
+          rm -rf build  && ln -s /usr/src/linux-headers-${{ env.kernel_main_version }}  build
+          rm -rf source
+          cd ${{ env.modules_path }}/
+          tar -zcf ${{ env.kernel_main_version }}-modules.tar.gz   ${{ env.kernel_main_version }}
+          mv ${{ env.kernel_main_version }}-modules.tar.gz  ${{ env.src_path }}
+
+
+      - name: Compression firmware
+        run: |
+          cd   ${{ env.src_path }}
+          tar -zcf hisi3798mv100_firmware.tar.gz  firmware
+
+      - name: Build and Compression Kernel-headers
+        run: |
+          mkdir  ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}
+          cp -a  Module.symvers      ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/
+          cp -a  Makefile           ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/
+          cp -a  scripts            ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/
+          mkdir -p                   ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/arch/arm
+          cp -a arch/arm/include    ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/arch/arm/include
+          cp -a arch/arm/Makefile      ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/arch/arm/Makefile
+          cp -a include                  ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/
+          cp -a .config                 ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/
+          cp -a  Kconfig             ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/
+          cp -a  Kbuild              ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/
+          cd ${{ env.src_path }}
+          tar -zcf  ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}.tar.gz   linux-headers-${{ env.kernel_main_version }}
+          
+          
+      - name: Upload Kernel to Release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ github.event.inputs.target_tag }}
+          name: "hisi3798mv100 Kernel ${{ env.kernel_main_version }}"
+          artifacts: |
+            ${{ env.src_path }}/hi_kernel-${{ env.kernel_main_version }}-mv100.bin
+            ${{ env.src_path }}/hisi3798mv100_firmware.tar.gz
+            ${{ env.src_path }}/${{ env.kernel_main_version }}-modules.tar.gz
+            ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}.tar.gz
+
+            
+          body: |
+            Kernel version: ${{ env.kernel_main_version }}            
+            hisi3798mv100 主线内核-${{ env.kernel_main_version }}   (咪咕100  华为EC6108v9b)
+            
+            包含的文件:
+            - hi_kernel-${{ env.kernel_main_version }}-mv100.bin: kernel-${{ env.kernel_main_version }}
+            - hisi3798mv100_firmware.tar.gz: WiFi和蓝牙驱动所需的 firmware  
+            - ${{ env.kernel_main_version }}-modules.tar.gz: 内核模块
+            - linux-headers-${{ env.kernel_main_version }}.tar.gz: 内核头文件
+            firmware包含rtl8723bu、rtl8188etv、rtl8188ftv
+            实测咪咕100的rtl8723bu的WiFi蓝牙正常、华为ec6108v9b的rtl8188ftv的WiFi正常、rtl8188ftv没有蓝牙。手里没有rtl8188etv没测试
+
+          draft: false
+          prerelease: false
+          allowUpdates: true
+          replacesArtifacts: false

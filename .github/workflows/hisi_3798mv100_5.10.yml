@@ -1,0 +1,49 @@
+name: make mv100 V6
+on:
+  repository_dispatch:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        
+      - name: Initialization environment
+        id: init
+        run: |
+          sudo -E apt-get -y update
+          sudo -E apt-get -y install gcc make gettext bison flex bc zlib1g-dev libncurses5-dev lzma libssl-dev gcc-arm-linux-gnueabi git gcc-arm-linux-gnueabihf u-boot-tools
+          sudo mkdir -p /builder
+          sudo chown -R runner.runner /builder
+          echo "status=success" >> ${GITHUB_OUTPUT}
+          
+      - name: make build
+        id: build
+        working-directory: /builder
+        if: ${{ steps.init.outputs.status }} == 'success' && !cancelled()
+        run: |
+          git clone -q --single-branch --depth=1 https://github.com/loonpn/ec6108v9c-linux-kernel mv100
+          cd mv100
+          \cp -f ${GITHUB_WORKSPACE}/config_files/hi3798mv100-v6.dts arch/arm/boot/dts/hi3798mv100-ec6108v9c.dts
+          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- hi3798mv100_defconfig
+          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- -j$(nproc)
+          cat arch/arm/boot/zImage arch/arm/boot/dts/hi3798mv100-ec6108v9c.dtb > zImage-dtb
+          mkimage -A arm -O linux -T kernel -C none -a 0X2000000 -e 0X2000000 -n linux -d zImage-dtb uImage
+          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- INSTALL_MOD_STRIP=1 INSTALL_MOD_PATH=kernel_modules modules_install
+          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- INSTALL_HDR_PATH=kernel_headers headers_install
+          tar zcvf linux-build.tar.gz kernel_headers kernel_modules
+          echo "status=success" >> ${GITHUB_OUTPUT}
+          
+      - name: Upload Kernel to Release
+        id: tar
+        uses: ncipollo/release-action@v1
+        if: ${{ steps.build.outputs.status }} == 'success' && !cancelled()
+        with:
+          tag: mv100_kernel_V6
+          artifacts: /builder/mv100/uImage,/builder/mv100/linux-build.tar.gz
+          allowUpdates: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+          body: |
+            - 海思3798Mv100内核,32位,v6.3.0。
