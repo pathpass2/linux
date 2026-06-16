@@ -309,7 +309,7 @@ jobs:
       - name: Upload Kernel to Release  master
         uses: ncipollo/release-action@v1
         with:
-          tag: ${{ github.ref_name || format('v{0}', env.kernel_main_version) }}
+          tag: format('rk3566-tspi-v{0}', env.kernel_main_version)
           name: "Master Kernel ${{ env.kernel_main_version }}"          
           artifacts: |
             ${{ env.src_path }}/boot_files/rk3566-tspi-${{ env.kernel_main_version }}.tar.gz
