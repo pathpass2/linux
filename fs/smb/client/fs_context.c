@@ -420,7 +420,7 @@ static int parse_symlink_flavor(struct fs_context *fc, char *value,
 #define DUP_CTX_STR(field)						\
 do {									\
 	if (ctx->field) {						\
-		new_ctx->field = kstrdup(ctx->field, GFP_ATOMIC);	\
+		new_ctx->field = kstrdup(ctx->field, GFP_KERNEL);	\
 		if (new_ctx->field == NULL) {				\
 			smb3_cleanup_fs_context_contents(new_ctx);	\
 			return -ENOMEM;					\
@@ -889,7 +889,7 @@ static int smb3_get_tree_common(struct fs_context *fc)
 	struct dentry *root;
 	int rc = 0;
 
-	root = cifs_smb3_do_mount(fc->fs_type, 0, ctx);
+	root = cifs_smb3_do_mount(fc, ctx);
 	if (IS_ERR(root))
 		return PTR_ERR(root);
 
