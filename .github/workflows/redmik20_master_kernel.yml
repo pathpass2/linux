@@ -67,6 +67,7 @@ jobs:
       - name: Get Kernel Version
         run: |
           echo "kernel_main_version=$(make kernelversion)" >> $GITHUB_ENV
+          echo "release_tag=redmik20-sm7150-v$(make kernelversion)" >> $GITHUB_ENV
       
       - name: Set armbian_path
         run: |
@@ -296,8 +297,8 @@ jobs:
       - name: Upload Kernel to Release
         uses: ncipollo/release-action@v1
         with:
-          tag: format('redmik20-sm7150-v{0}', env.kernel_main_version)
-          name: "redmik20_sm7150 Kernel ${{ env.kernel_main_version }}"
+          tag: ${{ env.release_tag }}
+          name: "Redmi K20 SM7150 Kernel ${{ env.kernel_main_version }}"
           artifacts: |
             ${{ env.boot_img_file }}/redmik20_sm7150_${{ env.kernel_main_version }}_boot.img
             ${{ env.boot_img_file }}/redmik20_sm7150_${{ env.kernel_main_version }}_boot_structure.tar.gz
