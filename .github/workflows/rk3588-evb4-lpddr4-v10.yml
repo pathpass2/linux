@@ -75,6 +75,7 @@ jobs:
         run: |
           # 获取内核版本号
           echo "kernel_main_version=$(make kernelversion)" >> $GITHUB_ENV
+          echo "release_tag=rk3588-evb4-v$(make kernelversion)" >> $GITHUB_ENV
 
 
       - name: Set armbian_path
@@ -310,8 +311,8 @@ jobs:
       - name: Upload Kernel to Release  master
         uses: ncipollo/release-action@v1
         with:
-          tag: format('rk3588-evb4-v{0}', env.kernel_main_version)
-          name: "Master Kernel ${{ env.kernel_main_version }}"          
+          tag: ${{ env.release_tag }}
+          name: "RK3588 EVB4 Kernel ${{ env.kernel_main_version }}"          
           artifacts: |
             ${{ env.src_path }}/boot_files/rk3588-evb4-lpddr4-v10-${{ env.kernel_main_version }}.tar.gz
             ${{ env.armbian_path }}/armbian_boot-${{ env.kernel_main_version }}.tar.gz
