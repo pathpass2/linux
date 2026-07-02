@@ -50,14 +50,9 @@
 		};
 	};
 
-	ir-receiver {
-		compatible = "gpio-ir-receiver";
-		gpios = <&gpio0 RK_PD4 GPIO_ACTIVE_LOW>;
-		pinctrl-names = "default";
-		pinctrl-0 = <&ir_receiver_pin>;
-	};
 
-	leds {
+
+/*	leds {
 		compatible = "gpio-leds";
 		pinctrl-names = "default";
 		pinctrl-0 = <&led_pins>;
@@ -70,7 +65,36 @@
 		};
 	};
 
-	/* ========== Regulators ========== */
+*/
+	leds {
+		compatible = "gpio-leds";
+		pinctrl-names = "default";
+		pinctrl-0 = <&led_rgb_g>;
+
+		led_green: led-0 {
+			color = <LED_COLOR_ID_GREEN>;
+			function = LED_FUNCTION_STATUS;
+			gpios = <&gpio0 RK_PB7 GPIO_ACTIVE_HIGH>;
+			linux,default-trigger = "heartbeat";
+		};
+
+		led_red: led-1 {
+			color = <LED_COLOR_ID_RED>;
+			function = LED_FUNCTION_STATUS;
+			gpios = <&gpio4 RK_PC5 GPIO_ACTIVE_HIGH>;
+			linux,default-trigger = "none";
+		};
+	};
+
+
+
+	fan: pwm-fan {
+		compatible = "pwm-fan";
+		cooling-levels = <0 95 145 195 255>;
+		fan-supply = <&vcc5v0_sys>;
+		pwms = <&pwm1 0 50000 0>;
+		#cooling-cells = <2>;
+	};
 
 	vcc12v_dcin: regulator-vcc12v-dcin {
 		compatible = "regulator-fixed";
@@ -195,41 +219,54 @@
 		regulator-max-microvolt = <5000000>;
 	};
 
-	spdif_dit: spdif-dit {
-		compatible = "linux,spdif-dit";
-		#sound-dai-cells = <0>;
-	};
 
-	spdif_sound: spdif-sound {
-		compatible = "simple-audio-card";
-		simple-audio-card,name = "SPDIF";
 
-		simple-audio-card,cpu {
-			sound-dai = <&spdif_tx0>;
-		};
 
-		simple-audio-card,codec {
-			sound-dai = <&spdif_dit>;
-		};
-	};
+&combphy0_ps {
+	status = "okay";
 };
 
-/* ========== Combo PHYs ========== */
-&combphy0_ps { status = "okay"; };
-&combphy1_ps { status = "okay"; };
-&combphy2_psu { status = "okay"; };
+&combphy1_ps {
+	status = "okay";
+};
 
-/* ========== CPU供电 ========== */
-&cpu_b0 { cpu-supply = <&vdd_cpu_big0_s0>; };
-&cpu_b1 { cpu-supply = <&vdd_cpu_big0_s0>; };
-&cpu_b2 { cpu-supply = <&vdd_cpu_big1_s0>; };
-&cpu_b3 { cpu-supply = <&vdd_cpu_big1_s0>; };
-&cpu_l0 { cpu-supply = <&vdd_cpu_lit_s0>; };
-&cpu_l1 { cpu-supply = <&vdd_cpu_lit_s0>; };
-&cpu_l2 { cpu-supply = <&vdd_cpu_lit_s0>; };
-&cpu_l3 { cpu-supply = <&vdd_cpu_lit_s0>; };
+&combphy2_psu {
+	status = "okay";
+};
 
-/* ========== GPU ========== */
+&cpu_b0 {
+	cpu-supply = <&vdd_cpu_big0_s0>;
+};
+
+&cpu_b1 {
+	cpu-supply = <&vdd_cpu_big0_s0>;
+};
+
+&cpu_b2 {
+	cpu-supply = <&vdd_cpu_big1_s0>;
+};
+
+&cpu_b3 {
+	cpu-supply = <&vdd_cpu_big1_s0>;
+};
+
+&cpu_l0 {
+	cpu-supply = <&vdd_cpu_lit_s0>;
+};
+
+&cpu_l1 {
+	cpu-supply = <&vdd_cpu_lit_s0>;
+};
+
+&cpu_l2 {
+	cpu-supply = <&vdd_cpu_lit_s0>;
+};
+
+&cpu_l3 {
+	cpu-supply = <&vdd_cpu_lit_s0>;
+};
+
+
 &gpu {
 	mali-supply = <&vdd_gpu_s0>;
 	status = "okay";
@@ -239,7 +276,7 @@
 	domain-supply = <&vdd_gpu_s0>;
 };
 
-/* ========== HDMI ========== */
+
 &hdmi0 {
 	frl-enable-gpios = <&gpio4 RK_PB1 GPIO_ACTIVE_LOW>;
 	pinctrl-0 = <&hdmim0_tx0_cec &hdmim0_tx0_hpd
@@ -260,9 +297,15 @@
 	};
 };
 
-&hdptxphy0 { status = "okay"; };
+&hdmi0_sound {
+	status = "okay";
+};
 
-/* ========== PMIC (I2C0) ========== */
+&hdptxphy0 { 
+	status = "okay"; 
+};
+
+
 &i2c0 {
 	pinctrl-names = "default";
 	pinctrl-0 = <&i2c0m2_xfer>;
@@ -303,7 +346,7 @@
 	};
 };
 
-/* ========== RTC (I2C6) ========== */
+
 &i2c6 {
 	status = "okay";
 
@@ -384,10 +427,27 @@
 };
 
 &i2s0_8ch {
-	pinctrl-0 = <&i2s0_lrck &i2s0_mclk &i2s0_sclk &i2s0_sdi0 &i2s0_sdo0>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2s0_lrck
+		     &i2s0_mclk
+		     &i2s0_sclk
+		     &i2s0_sdi0
+		     &i2s0_sdo0>;
 	status = "okay";
+
+	i2s0_8ch_p0: port {
+		i2s0_8ch_p0_0: endpoint {
+			dai-format = "i2s";
+			mclk-fs = <256>;
+			remote-endpoint = <&es8316_p0_0>;
+		};
+	};
+
 };
 
+&i2s5_8ch {
+	status = "okay";
+};
 
 &gmac1 {
 	clock_in_out = "output";
@@ -415,7 +475,7 @@
 	};
 };
 
-/* ========== WiFi AP6275P ========== */
+
 &pcie2x1l0 {
 	compatible = "rockchip,rk3588-pcie", "rockchip,rk3568-pcie";
 	phys = <&combphy1_ps PHY_TYPE_PCIE>;
@@ -447,37 +507,46 @@
 
 &uart9 {
 	pinctrl-names = "default";
-	pinctrl-0 = <&uart9m0_xfer &uart9m0_ctsn &uart9m0_rtsn &bt_en &bt_wake &bt_wake_host>;
-	uart-has-rtscts;
+	pinctrl-0 = <&uart6m1_xfer &uart6m1_ctsn &uart6m1_rtsn>;
 	status = "okay";
 
 	bluetooth {
 		compatible = "brcm,bcm43438-bt";
 		clocks = <&hym8563>;
 		clock-names = "lpo";
-		shutdown-gpios = <&gpio0 22 GPIO_ACTIVE_HIGH>;
-		device-wakeup-gpios = <&gpio0 21 GPIO_ACTIVE_HIGH>;
 		interrupt-parent = <&gpio0>;
-		interrupts = <0 IRQ_TYPE_EDGE_FALLING>;
+		interrupts = <RK_PC5 IRQ_TYPE_LEVEL_HIGH>;
+		interrupt-names = "host-wakeup";
+		device-wakeup-gpios = <&gpio3 RK_PD5 GPIO_ACTIVE_HIGH>;
+		shutdown-gpios = <&gpio3 RK_PA6 GPIO_ACTIVE_HIGH>;
+		max-speed = <1500000>;
 		pinctrl-names = "default";
-		pinctrl-0 = <&bt_en>, <&bt_wake_host>, <&bt_wake>;
+		pinctrl-0 = <&bt_wake_host_irq &bt_wake_pin &bt_reset_pin>;
+		vbat-supply = <&vcc_3v3_s3>;
+		vddio-supply = <&vcc_1v8_s3>;
 	};
 };
 
-/* ========== UART2 ========== */
+
 &uart2 {
 	pinctrl-0 = <&uart2m0_xfer>;
 	pinctrl-names = "default";
 	status = "okay";
 };
 
-/* ========== USB ========== */
-&u2phy0 { status = "okay"; };
+
+&u2phy0 { 
+	status = "okay"; 
+};
+
 &u2phy0_otg {
 	phy-supply = <&vbus5v0_typec>;
 	status = "okay";
 };
-&u2phy1 { status = "okay"; };
+&u2phy1 { 
+	status = "okay"; 
+};
+
 &u2phy1_otg {
 	phy-supply = <&vcc5v0_host>;
 	status = "okay";
@@ -504,7 +573,9 @@
 	};
 };
 
-&usbdp_phy1 { status = "okay"; };
+&usbdp_phy1 { 
+	status = "okay"; 
+};
 
 &usb_host0_xhci {
 	dr_mode = "otg";
@@ -523,7 +594,7 @@
 	status = "okay";
 };
 
-/* ========== eMMC ========== */
+
 &sdhci {
 	bus-width = <8>;
 	no-sdio;
@@ -534,22 +605,51 @@
 	status = "okay";
 };
 
-/* ========== SARADC / TSADC ========== */
+
+&sdmmc {
+	bus-width = <4>;
+	cap-mmc-highspeed;
+	cap-sd-highspeed;
+	disable-wp;
+	max-frequency = <200000000>;
+	no-sdio;
+	no-mmc;
+	sd-uhs-sdr104;
+	vmmc-supply = <&vcc_3v3_s3>;
+	vqmmc-supply = <&vccio_sd_s0>;
+	status = "okay";
+};
+
+
+&pwm1 {
+	status = "okay";
+};
+
 &saradc {
 	vref-supply = <&avcc_1v8_s0>;
 	status = "okay";
 };
 
-&tsadc { status = "okay"; };
-
-/* ========== SPDIF ========== */
-&spdif_tx0 {
-	pinctrl-names = "default";
-	pinctrl-0 = <&spdif0m1_tx>;
-	status = "okay";
+&tsadc { 
+	status = "okay"; 
 };
 
-/* ========== SPI2 (PMIC RK806) ========== */
+
+&vop_mmu { 
+	status = "okay"; 
+};
+
+&vop { 
+	status = "okay"; 
+};
+
+&vp0 {
+	vp0_out_hdmi0: endpoint@ROCKCHIP_VOP2_EP_HDMI0 {
+		reg = <ROCKCHIP_VOP2_EP_HDMI0>;
+		remote-endpoint = <&hdmi0_in_vp0>;
+	};
+};
+
 &spi2 {
 	assigned-clocks = <&cru CLK_SPI2>;
 	assigned-clock-rates = <200000000>;
@@ -874,18 +974,10 @@
 	};
 };
 
-/* ========== VOP ========== */
-&vop_mmu { status = "okay"; };
-&vop { status = "okay"; };
 
-&vp0 {
-	vp0_out_hdmi0: endpoint@ROCKCHIP_VOP2_EP_HDMI0 {
-		reg = <ROCKCHIP_VOP2_EP_HDMI0>;
-		remote-endpoint = <&hdmi0_in_vp0>;
-	};
-};
 
-/* ========== Pin Control ========== */
+
+
 &pinctrl {
 	hdmi {
 		hdmi0_tx_on_h: hdmi0-tx-on-h {
@@ -899,15 +991,27 @@
 		};
 	};
 
-	ir-receiver {
-		ir_receiver_pin: ir-receiver-pin {
-			rockchip,pins = <0 RK_PD4 RK_FUNC_GPIO &pcfg_pull_none>;
+
+
+/*	leds {
+		led_pins: led-pins {
+			rockchip,pins = <3 RK_PD4 RK_FUNC_GPIO &pcfg_pull_none>;
 		};
 	};
 
+*/
 	leds {
-		led_pins: led-pins {
-			rockchip,pins = <3 RK_PD4 RK_FUNC_GPIO &pcfg_pull_none>;
+		led_rgb_g: led-rgb-g {
+			rockchip,pins = <0 RK_PB7 RK_FUNC_GPIO &pcfg_pull_none>;
+		};
+		led_rgb_r: led-rgb-r {
+			rockchip,pins = <0 RK_PB7 RK_FUNC_GPIO &pcfg_pull_none>;
+		};
+	};
+
+	sound {
+		hp_detect: hp-detect {
+			rockchip,pins = <1 RK_PD5 RK_FUNC_GPIO &pcfg_pull_none>;
 		};
 	};
 
@@ -920,16 +1024,19 @@
 		};
 	};
 
-	/* 蓝牙 - 使用GPIO编号 */
-	wifibt {
-		bt_en: bt-en {
-			rockchip,pins = <0 22 RK_FUNC_GPIO &pcfg_pull_up>;
+
+
+	wireless-bluetooth {
+		bt_reset_pin: bt-reset-pin {
+			rockchip,pins = <3 RK_PA6 RK_FUNC_GPIO &pcfg_pull_none>;
 		};
-		bt_wake: bt-wake {
-			rockchip,pins = <0 21 RK_FUNC_GPIO &pcfg_pull_up>;
+
+		bt_wake_pin: bt-wake-pin {
+			rockchip,pins = <3 RK_PD5 RK_FUNC_GPIO &pcfg_pull_up>;
 		};
-		bt_wake_host: bt-wake-host {
-			rockchip,pins = <0 0 RK_FUNC_GPIO &pcfg_pull_down>;
+
+		bt_wake_host_irq: bt-wake-host-irq {
+			rockchip,pins = <0 RK_PC5 RK_FUNC_GPIO &pcfg_pull_down>;
 		};
 	};
 
@@ -972,9 +1079,4 @@
 		};
 	};
 
-	audio {
-		hp_det: hp-det {
-			rockchip,pins = <1 RK_PD4 RK_FUNC_GPIO &pcfg_pull_none>;
-		};
-	};
 };
