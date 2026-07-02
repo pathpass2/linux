@@ -19,20 +19,7 @@
 		serial9 = &uart9;
 	};
 
-	adc-keys {
-		status = "disabled";
-		compatible = "adc-keys";
-		io-channels = <&saradc 1>;
-		io-channel-names = "buttons";
-		keyup-threshold-microvolt = <1800000>;
-		poll-interval = <100>;
 
-		button-function {
-			label = "Reset";
-			linux,code = <KEY_VENDOR>;
-			press-threshold-microvolt = <1750>;
-		};
-	};
 
 	chosen {
 		stdout-path = "serial2:1500000n8";
