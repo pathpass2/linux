@@ -22,8 +22,6 @@
 		serial9 = &uart9;
 	};
 
-
-
 	chosen {
 		stdout-path = "serial2:1500000n8";
 	};
@@ -39,22 +37,6 @@
 		};
 	};
 
-
-
-/*	leds {
-		compatible = "gpio-leds";
-		pinctrl-names = "default";
-		pinctrl-0 = <&led_pins>;
-
-		led {
-			color = <LED_COLOR_ID_BLUE>;
-			function = LED_FUNCTION_STATUS;
-			gpios = <&gpio3 RK_PD4 GPIO_ACTIVE_HIGH>;
-			linux,default-trigger = "heartbeat";
-		};
-	};
-
-*/
 	leds {
 		compatible = "gpio-leds";
 		pinctrl-names = "default";
@@ -74,8 +56,6 @@
 			linux,default-trigger = "none";
 		};
 	};
-
-
 
 	fan: pwm-fan {
 		compatible = "pwm-fan";
@@ -207,9 +187,7 @@
 		regulator-min-microvolt = <5000000>;
 		regulator-max-microvolt = <5000000>;
 	};
-
-
-
+};
 
 &combphy0_ps {
 	status = "okay";
@@ -255,7 +233,6 @@
 	cpu-supply = <&vdd_cpu_lit_s0>;
 };
 
-
 &gpu {
 	mali-supply = <&vdd_gpu_s0>;
 	status = "okay";
@@ -264,7 +241,6 @@
 &pd_gpu {
 	domain-supply = <&vdd_gpu_s0>;
 };
-
 
 &pd_npu {
 	domain-supply = <&vdd_npu_s0>;
@@ -294,10 +270,9 @@
 	status = "okay";
 };
 
-&hdptxphy0 { 
-	status = "okay"; 
+&hdptxphy0 {
+	status = "okay";
 };
-
 
 &i2c0 {
 	pinctrl-names = "default";
@@ -338,7 +313,6 @@
 		};
 	};
 };
-
 
 &i2c1 {
 	pinctrl-names = "default";
@@ -423,7 +397,6 @@
 	};
 };
 
-
 &i2c7 {
 	status = "okay";
 
@@ -438,6 +411,12 @@
 		HPVDD-supply = <&vcc_3v3_s0>;
 		PVDD-supply = <&vcc_3v3_s0>;
 		#sound-dai-cells = <0>;
+
+		port {
+			es8388_p0_0: endpoint {
+				remote-endpoint = <&i2s0_8ch_p0_0>;
+			};
+		};
 	};
 };
 
@@ -454,10 +433,9 @@
 		i2s0_8ch_p0_0: endpoint {
 			dai-format = "i2s";
 			mclk-fs = <256>;
-			remote-endpoint = <&es8316_p0_0>;
+			remote-endpoint = <&es8388_p0_0>;
 		};
 	};
-
 };
 
 &i2s5_8ch {
@@ -490,7 +468,6 @@
 	};
 };
 
-
 &pcie2x1l0 {
 	compatible = "rockchip,rk3588-pcie", "rockchip,rk3568-pcie";
 	phys = <&combphy1_ps PHY_TYPE_PCIE>;
@@ -519,7 +496,6 @@
 	};
 };
 
-
 &uart9 {
 	pinctrl-names = "default";
 	pinctrl-0 = <&uart6m1_xfer &uart6m1_ctsn &uart6m1_rtsn>;
@@ -542,24 +518,23 @@
 	};
 };
 
-
 &uart2 {
 	pinctrl-0 = <&uart2m0_xfer>;
 	pinctrl-names = "default";
 	status = "okay";
 };
 
-
-&u2phy0 { 
-	status = "okay"; 
+&u2phy0 {
+	status = "okay";
 };
 
 &u2phy0_otg {
 	phy-supply = <&vbus5v0_typec>;
 	status = "okay";
 };
-&u2phy1 { 
-	status = "okay"; 
+
+&u2phy1 {
+	status = "okay";
 };
 
 &u2phy1_otg {
@@ -588,8 +563,8 @@
 	};
 };
 
-&usbdp_phy1 { 
-	status = "okay"; 
+&usbdp_phy1 {
+	status = "okay";
 };
 
 &usb_host0_xhci {
@@ -609,7 +584,6 @@
 	status = "okay";
 };
 
-
 &sdhci {
 	bus-width = <8>;
 	no-sdio;
@@ -619,7 +593,6 @@
 	mmc-hs400-enhanced-strobe;
 	status = "okay";
 };
-
 
 &sdmmc {
 	bus-width = <4>;
@@ -634,7 +607,6 @@
 	vqmmc-supply = <&vccio_sd_s0>;
 	status = "okay";
 };
-
 
 &rknn_core_0 {
 	npu-supply = <&vdd_npu_s0>;
@@ -666,7 +638,6 @@
 	status = "okay";
 };
 
-
 &pwm1 {
 	status = "okay";
 };
@@ -676,17 +647,16 @@
 	status = "okay";
 };
 
-&tsadc { 
-	status = "okay"; 
+&tsadc {
+	status = "okay";
 };
 
-
-&vop_mmu { 
-	status = "okay"; 
+&vop_mmu {
+	status = "okay";
 };
 
-&vop { 
-	status = "okay"; 
+&vop {
+	status = "okay";
 };
 
 &vp0 {
@@ -778,7 +748,6 @@
 			};
 
 			vdd_log_s0: dcdc-reg3 {
-
 				regulator-always-on;
 				regulator-boot-on;
 				regulator-min-microvolt = <675000>;
@@ -1020,10 +989,6 @@
 	};
 };
 
-
-
-
-
 &pinctrl {
 	hdmi {
 		hdmi0_tx_on_h: hdmi0-tx-on-h {
@@ -1037,15 +1002,6 @@
 		};
 	};
 
-
-
-/*	leds {
-		led_pins: led-pins {
-			rockchip,pins = <3 RK_PD4 RK_FUNC_GPIO &pcfg_pull_none>;
-		};
-	};
-
-*/
 	leds {
 		led_rgb_g: led-rgb-g {
 			rockchip,pins = <0 RK_PB7 RK_FUNC_GPIO &pcfg_pull_none>;
@@ -1069,8 +1025,6 @@
 			rockchip,pins = <0 RK_PC4 RK_FUNC_GPIO &pcfg_pull_up>;
 		};
 	};
-
-
 
 	wireless-bluetooth {
 		bt_reset_pin: bt-reset-pin {
@@ -1124,7 +1078,4 @@
 			rockchip,pins = <0 RK_PB3 RK_FUNC_GPIO &pcfg_pull_up>;
 		};
 	};
-
 };
-
-}；
