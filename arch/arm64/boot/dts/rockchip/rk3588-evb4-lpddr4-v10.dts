@@ -298,7 +298,7 @@
 	};
 };
 
-/* ==================== WiFi PCIe - 使用 gpio3-5 作为 clkreq ==================== */
+
 &pcie2x1l0 {
 	compatible = "rockchip,rk3588-pcie", "rockchip,rk3568-pcie";
 	phys = <&combphy1_ps PHY_TYPE_PCIE>;
