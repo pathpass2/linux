@@ -8,7 +8,6 @@
 #include <dt-bindings/pinctrl/rockchip.h>
 #include <dt-bindings/soc/rockchip,vop2.h>
 #include <dt-bindings/usb/pd.h>
-#include "rk8xx.h"
 #include "rk3588.dtsi"
 
 / {
