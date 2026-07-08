@@ -22,7 +22,6 @@
 	};
 
 	chosen {
-		bootargs = "root=/dev/mmcblk0p3  rootfstype=ext4 rw rootwait console=ttyS2,115200";
 		stdout-path = "serial2:1500000n8";
 	};
 
@@ -37,16 +36,26 @@
 		};
 	};
 
+
 	leds {
 		compatible = "gpio-leds";
 		pinctrl-names = "default";
-		pinctrl-0 = <&led_pins>;
+		pinctrl-0 = <&led_rgb_b>, <&led_rgb_r>;
 
-		led {
+		led_blue: led-0 {
 			color = <LED_COLOR_ID_BLUE>;
 			function = LED_FUNCTION_STATUS;
-			gpios = <&gpio3 RK_PD4 GPIO_ACTIVE_HIGH>;
-			linux,default-trigger = "heartbeat";
+			gpios = <&gpio1 22 GPIO_ACTIVE_HIGH>;
+			default-state = "on";
+			linux,default-trigger = "none";
+		};
+
+		led_red: led-1 {
+			color = <LED_COLOR_ID_RED>;
+			function = LED_FUNCTION_STATUS;
+			gpios = <&gpio4 RK_PA0 GPIO_ACTIVE_HIGH>;
+			default-state = "on";
+			linux,default-trigger = "none";
 		};
 	};
 
@@ -348,9 +357,13 @@
 		};
 	};
 
+
 	leds {
-		led_pins: led-pins {
-			rockchip,pins = <3 RK_PD4 RK_FUNC_GPIO &pcfg_pull_none>;
+		led_rgb_b: led-rgb-b {
+			rockchip,pins = <1 22 RK_FUNC_GPIO &pcfg_pull_none>;
+		};
+		led_rgb_r: led-rgb-r {
+			rockchip,pins = <4 RK_PA0 RK_FUNC_GPIO &pcfg_pull_none>;
 		};
 	};
 
