@@ -17,12 +17,13 @@
 	aliases {
 		ethernet0 = &gmac1;
 		mmc0 = &sdhci;
+		mmc1 = &sdmmc;
 		serial2 = &uart2;
 		serial9 = &uart9;
 	};
 
 	chosen {
-		bootargs = "root=/dev/mmcblk0p3  rootfstype=ext4 rw rootwait console=ttyS2,115200";
+		bootargs = "root=/dev/mmcblk0p3  rootfstype=ext4 rw rootwait console=ttyS2,1500000";
 		stdout-path = "serial2:1500000n8";
 	};
 
@@ -36,7 +37,6 @@
 			};
 		};
 	};
-
 
 	leds {
 		compatible = "gpio-leds";
@@ -84,6 +84,16 @@
 		vin-supply = <&vcc5v0_sys>;
 	};
 
+	vcc_3v3_sd_s0: vcc-3v3-sd-s0 {
+		compatible = "regulator-fixed";
+		regulator-name = "vcc_3v3_sd_s0";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		status = "disabled";
+		//gpio = <&gpio4 5 GPIO_ACTIVE_LOW>;
+		//vin-supply = <&vcc_3v3_s3>;
+	};
+
 	vbus5v0_typec: regulator-vbus5v0-typec {
 		compatible = "regulator-fixed";
 		enable-active-high;
@@ -105,6 +115,20 @@
 		regulator-boot-on;
 		regulator-min-microvolt = <5000000>;
 		regulator-max-microvolt = <5000000>;
+	};
+
+	vcc5v0_host: regulator-vcc5v0-host {
+		compatible = "regulator-fixed";
+		regulator-name = "vcc5v0_host";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		enable-active-high;
+		gpio = <&gpio4 RK_PB0 GPIO_ACTIVE_HIGH>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&vcc5v0_host_en>;
+		vin-supply = <&vcc5v0_sys>;
+		regulator-always-on;
+		regulator-boot-on;
 	};
 };
 
@@ -158,7 +182,7 @@
 };
 
 &hdmi0 {
-	frl-enable-gpios = <&gpio4 RK_PB0 GPIO_ACTIVE_LOW>;
+	frl-enable-gpios = <&gpio1 23 GPIO_ACTIVE_LOW>;
 	pinctrl-0 = <&hdmim0_tx0_cec &hdmim0_tx0_hpd
 		     &hdmim0_tx0_scl &hdmim0_tx0_sda &hdmi0_tx_on_h>;
 	pinctrl-names = "default";
@@ -237,6 +261,7 @@
 		wakeup-source;
 	};
 
+	// FUSB302 - Type-C 控制器
 	usbc0: usb-typec@22 {
 		compatible = "fcs,fusb302";
 		reg = <0x22>;
@@ -247,7 +272,7 @@
 		vbus-supply = <&vbus5v0_typec>;
 		status = "okay";
 
-		usb_con: connector {
+		connector {
 			compatible = "usb-c-connector";
 			label = "USB-C";
 			data-role = "dual";
@@ -309,7 +334,6 @@
 	};
 };
 
-
 &pcie2x1l0 {
 	compatible = "rockchip,rk3588-pcie", "rockchip,rk3568-pcie";
 	phys = <&combphy1_ps PHY_TYPE_PCIE>;
@@ -348,7 +372,7 @@
 &pinctrl {
 	hdmi {
 		hdmi0_tx_on_h: hdmi0-tx-on-h {
-			rockchip,pins = <4 RK_PB0 RK_FUNC_GPIO &pcfg_pull_none>;
+			rockchip,pins = <1 23 RK_FUNC_GPIO &pcfg_pull_none>;
 		};
 	};
 
@@ -357,7 +381,6 @@
 			rockchip,pins = <0 RK_PD3 RK_FUNC_GPIO &pcfg_pull_none>;
 		};
 	};
-
 
 	leds {
 		led_rgb_b: led-rgb-b {
@@ -384,6 +407,13 @@
 		};
 	};
 
+
+	sdmmc {
+		sdmmc_det: sdmmc-det {
+			rockchip,pins = <0 RK_PA4 RK_FUNC_GPIO &pcfg_pull_up>;
+			};
+		};
+
 	usb-typec {
 		typec5v_pwren: typec5v-pwren {
 			rockchip,pins = <4 RK_PA1 RK_FUNC_GPIO &pcfg_pull_none>;
@@ -392,6 +422,13 @@
 		usbc0_int: usbc0-int {
 			rockchip,pins = <0 RK_PB3 RK_FUNC_GPIO &pcfg_pull_up>;
 		};
+	};
+
+	usb {
+		vcc5v0_host_en: vcc5v0-host3-en {
+			rockchip,pins = <4 RK_PB0 RK_FUNC_GPIO &pcfg_pull_none>;
+		};
+
 	};
 
 	wifibt {
@@ -422,6 +459,7 @@
 	status = "okay";
 };
 
+// ============ eMMC 配置 (SDHCI) ============
 &sdhci {
 	bus-width = <8>;
 	no-sdio;
@@ -429,6 +467,21 @@
 	non-removable;
 	mmc-hs400-1_8v;
 	mmc-hs400-enhanced-strobe;
+	status = "okay";
+};
+
+// ============ SD 卡配置 (SDMMC) ============
+&sdmmc {
+	bus-width = <4>;
+	cap-mmc-highspeed;
+	cap-sd-highspeed;
+	disable-wp;
+	max-frequency = <150000000>;
+	sd-uhs-sdr104;
+	supports-sd;
+	vmmc-supply = <&vcc_3v3_s3>;
+	vqmmc-supply = <&vccio_sd_s0>;
+	cd-gpios = <&gpio0 RK_PA4 GPIO_ACTIVE_LOW>;
 	status = "okay";
 };
 
@@ -758,6 +811,8 @@
 	status = "okay";
 };
 
+// ============ USB PHY 配置 ============
+// Type-C 口 USB2 PHY
 &u2phy0 {
 	status = "okay";
 };
@@ -767,13 +822,100 @@
 	status = "okay";
 };
 
-&u2phy1 {
+// USB3.0 A口 USB2 PHY (u2phy2)
+&u2phy2 {
 	status = "okay";
 };
 
-&u2phy1_otg {
-	phy-supply = <&vcc5v0_sys>;
+&u2phy2_host {
+	phy-supply = <&vcc5v0_host>;
 	status = "okay";
+};
+
+// USB2.0 A口 USB2 PHY (u2phy3)
+&u2phy3 {
+	status = "okay";
+};
+
+&u2phy3_host {
+	phy-supply = <&vcc5v0_host>;
+	status = "okay";
+};
+
+// ============ Type-C 口 (OTG) ============
+&usb_host0_xhci {
+	dr_mode = "otg";
+	usb-role-switch;
+	phys = <&u2phy0_otg>, <&usbdp_phy0 PHY_TYPE_USB3>;
+	phy-names = "usb2-phy", "usb3-phy";
+	status = "okay";
+
+	port {
+		dwc3_0_role_switch: endpoint {
+			remote-endpoint = <&usbc0_role_sw>;
+		};
+	};
+};
+
+// ============ USB3.0 A口 (Host) ============
+&usb_host1_xhci {
+	dr_mode = "host";
+	phys = <&u2phy2_host>, <&combphy2_psu PHY_TYPE_USB3>;
+	phy-names = "usb2-phy", "usb3-phy";
+	snps,dis_enblslpm_quirk;
+	snps,dis-u2-freeclk-exists-quirk;
+	snps,dis-del-phy-power-chg-quirk;
+	snps,dis-tx-ipgap-linecheck-quirk;
+	snps,dis_rxdet_inp3_quirk;
+	status = "okay";
+};
+
+// USB3.0 A口的 EHCI/OHCI（由 XHCI 统一管理，禁用）
+&usb_host1_ehci {
+	status = "disabled";
+};
+
+&usb_host1_ohci {
+	phys = <&u2phy3_host>;
+	phy-names = "usb";
+	status = "okay";
+};
+
+// ============ USB2.0 A口 (Host) ============
+&usb_host0_ehci {
+	phys = <&u2phy3_host>;
+	phy-names = "usb";
+	status = "okay";
+};
+
+&usb_host0_ohci {
+	status = "okay";
+};
+
+// ============ Type-C DP/PHY (USB3) ============
+&usbdp_phy0 {
+	mode-switch;
+	orientation-switch;
+	sbu1-dc-gpios = <&gpio4 RK_PA6 GPIO_ACTIVE_HIGH>;
+	sbu2-dc-gpios = <&gpio4 RK_PA7 GPIO_ACTIVE_HIGH>;
+	status = "okay";
+
+	port {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		usbdp_phy0_orientation_switch: endpoint@0 {
+			reg = <0>;
+			remote-endpoint = <&usbc0_orien_sw>;
+		};
+		usbdp_phy0_dp_altmode_mux: endpoint@1 {
+			reg = <1>;
+			remote-endpoint = <&dp_altmode_mux>;
+		};
+	};
+};
+
+&usbdp_phy1 {
+	status = "disabled";
 };
 
 &uart2 {
@@ -801,48 +943,6 @@
 	};
 };
 
-&usbdp_phy0 {
-	mode-switch;
-	orientation-switch;
-	sbu1-dc-gpios = <&gpio4 RK_PA6 GPIO_ACTIVE_HIGH>;
-	sbu2-dc-gpios = <&gpio4 RK_PA7 GPIO_ACTIVE_HIGH>;
-	status = "okay";
-
-	port {
-		#address-cells = <1>;
-		#size-cells = <0>;
-		usbdp_phy0_orientation_switch: endpoint@0 {
-			reg = <0>;
-			remote-endpoint = <&usbc0_orien_sw>;
-		};
-		usbdp_phy0_dp_altmode_mux: endpoint@1 {
-			reg = <1>;
-			remote-endpoint = <&dp_altmode_mux>;
-		};
-	};
-};
-
-&usbdp_phy1 {
-	status = "okay";
-};
-
-&usb_host0_xhci {
-	dr_mode = "otg";
-	usb-role-switch;
-	status = "okay";
-
-	port {
-		dwc3_0_role_switch: endpoint {
-			remote-endpoint = <&usbc0_role_sw>;
-		};
-	};
-};
-
-&usb_host1_xhci {
-	dr_mode = "host";
-	status = "okay";
-};
-
 &vop_mmu {
 	status = "okay";
 };
@@ -857,3 +957,4 @@
 		remote-endpoint = <&hdmi0_in_vp0>;
 	};
 };
+
