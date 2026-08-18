@@ -53,7 +53,8 @@ jobs:
             bison \
             libncurses-dev \
             initramfs-tools \
-            busybox-static
+            busybox-static \
+            cpio
           sudo -E apt-get -y install $(curl -fsSL https://tinyurl.com/ubuntu2204-build-armbian)
 
       - name: Setup ARM Toolchain
@@ -195,7 +196,7 @@ jobs:
       - name: Install chroot dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y debootstrap qemu-user-static initramfs-tools u-boot-tools
+          sudo apt-get install -y debootstrap qemu-user-static cpio u-boot-tools
 
       - name: Setup chroot base system
         run: |
@@ -220,9 +221,11 @@ jobs:
       - name: Build minimal initrd in chroot (cpio format, without modules)
         run: |
           sudo chroot /mnt/chroot /bin/bash <<'EOF'
-          # 安装必要包
+          # 安装必要包（包括 cpio 和 u-boot-tools）
           apt-get install -y --no-install-recommends \
-            busybox-static
+            busybox-static \
+            cpio \
+            u-boot-tools
 
           # 创建临时目录
           mkdir -p /tmp/initrd
@@ -288,10 +291,22 @@ jobs:
           echo "打包成 cpio 格式..."
           find . | cpio -o -H newc | gzip -9 > /boot/initrd.img-${{ env.kernel_main_version }}
           
+          # 检查 initrd 是否生成成功
+          if [ ! -f "/boot/initrd.img-${{ env.kernel_main_version }}" ]; then
+            echo "错误：initrd.img 生成失败"
+            exit 1
+          fi
+          
           # 生成 uInitrd
           echo "生成 uInitrd..."
           /usr/bin/mkimage -A arm64 -O linux -T ramdisk -C gzip -a 0 -e 0 -n uInitrd \
             -d /boot/initrd.img-${{ env.kernel_main_version }} /boot/uInitrd-${{ env.kernel_main_version }}
+          
+          # 检查 uInitrd 是否生成成功
+          if [ ! -f "/boot/uInitrd-${{ env.kernel_main_version }}" ]; then
+            echo "错误：uInitrd 生成失败"
+            exit 1
+          fi
           
           # 清理临时目录
           cd /
