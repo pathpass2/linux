@@ -4,6 +4,11 @@ on:
   push:
     branches: [ main ]
   workflow_dispatch:
+    inputs:
+      target_tag:
+        description: 'Target tag to checkout'
+        required: false
+        default: ''
 
 env:
   ARCH: arm64
@@ -64,12 +69,10 @@ jobs:
 
       - name: Get Kernel Version
         run: |
-          KERNEL_VER=$(make -s kernelrelease 2>/dev/null || echo "")
-          if [ -z "$KERNEL_VER" ]; then
-            KERNEL_VER=$(grep "^VERSION" Makefile | awk '{print $3}').$(grep "^PATCHLEVEL" Makefile | awk '{print $3}').$(grep "^SUBLEVEL" Makefile | awk '{print $3}')
-          fi
+          KERNEL_VER=$(make kernelversion)
           echo "kernel_main_version=${KERNEL_VER}" >> $GITHUB_ENV
           echo "release_tag=rk3588-evb4-v${KERNEL_VER}" >> $GITHUB_ENV
+          echo "Kernel version: ${KERNEL_VER}"
 
       - name: Set armbian_path
         run: |
@@ -100,23 +103,29 @@ jobs:
 
       - name: Build Kernel-headers
         run: |
-          mkdir ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}
-          cp -a Module.symvers ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/
+          mkdir -p ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}
+          cp -a Module.symvers ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/ 2>/dev/null || true
           cp -a Makefile ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/
           cp -a scripts ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/
           mkdir -p ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/arch/arm64
-          cp -a arch/arm64/include ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/arch/arm64/
-          cp -a arch/arm64/kvm ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/arch/arm64/
-          cp -a arch/arm64/Makefile ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/arch/arm64/
-          cp -a include ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/
+          cp -a arch/arm64/include ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/arch/arm64/ 2>/dev/null || true
+          cp -a arch/arm64/kvm ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/arch/arm64/ 2>/dev/null || true
+          cp -a arch/arm64/Makefile ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/arch/arm64/ 2>/dev/null || true
+          cp -a arch/arm64/Kbuild ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/arch/arm64/ 2>/dev/null || true
+          cp -a arch/arm64/Kconfig ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/arch/arm64/ 2>/dev/null || true
+          cp -a include ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/ 2>/dev/null || true
           cp -a .config ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/
           cp -a Kbuild ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/ 2>/dev/null || true
+          cp -a Kconfig ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/ 2>/dev/null || true
+          mkdir -p ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/scripts/mod
+          cp -a scripts/mod/*.h ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/scripts/mod/ 2>/dev/null || true
           cd ${{ env.src_path }}
-          tar -zcf linux-headers-${{ env.kernel_main_version }}.tar.gz linux-headers-${{ env.kernel_main_version }}
+          tar -czf linux-headers-${{ env.kernel_main_version }}.tar.gz linux-headers-${{ env.kernel_main_version }}
+          ls -lh linux-headers-${{ env.kernel_main_version }}.tar.gz
 
       - name: Compression_boot_files
         run: |
-          mkdir ${{ env.src_path }}/boot_files
+          mkdir -p ${{ env.src_path }}/boot_files
           cd ${{ env.src_path }}/boot_files
           mv ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}.tar.gz .
           mv ${{ env.modules_path }}/${{ env.kernel_main_version }}-modules.tar.gz .
