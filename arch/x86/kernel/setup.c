@@ -16,6 +16,7 @@
 #include <linux/init_ohci1394_dma.h>
 #include <linux/initrd.h>
 #include <linux/iscsi_ibft.h>
+#include <linux/kexec_handover.h>
 #include <linux/memblock.h>
 #include <linux/panic_notifier.h>
 #include <linux/pci.h>
@@ -120,8 +121,7 @@ struct cpuinfo_x86 new_cpu_data;
 struct apm_info apm_info;
 EXPORT_SYMBOL(apm_info);
 
-#if defined(CONFIG_X86_SPEEDSTEP_SMI) || \
-	defined(CONFIG_X86_SPEEDSTEP_SMI_MODULE)
+#if IS_ENABLED(CONFIG_X86_SPEEDSTEP_SMI)
 struct ist_info ist_info;
 EXPORT_SYMBOL(ist_info);
 #else
@@ -230,7 +230,7 @@ char builtin_cmdline[COMMAND_LINE_SIZE] = CONFIG_CMDLINE;
 bool builtin_cmdline_added __ro_after_init;
 #endif
 
-#if defined(CONFIG_EDD) || defined(CONFIG_EDD_MODULE)
+#if IS_ENABLED(CONFIG_EDD)
 struct edd edd;
 #ifdef CONFIG_EDD_MODULE
 EXPORT_SYMBOL(edd);
@@ -1268,7 +1268,7 @@ void __init setup_arch(char **cmdline_p)
 
 	mcheck_init();
 
-	register_refined_jiffies(CLOCK_TICK_RATE);
+	register_refined_jiffies(PIT_TICK_RATE);
 
 #ifdef CONFIG_EFI
 	if (efi_enabled(EFI_BOOT))
