@@ -84,7 +84,7 @@ jobs:
         run: |
           mkdir -p ${{ env.armbian_path }}/
           mkdir -p ${{ env.armbian_file_path }}
-          make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu- rk3588_defconfig
+          make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu- rk3588_evb4_defconfig
           make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu- dtbs
           make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu- rk3588-evb4-lpddr4-v10.img -j$(nproc)
           make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu- modules_install INSTALL_MOD_PATH=${{ env.src_path }}/modules
