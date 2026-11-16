@@ -3166,7 +3166,7 @@ static int hpsa_do_reset(struct ctlr_info *h, struct hpsa_scsi_dev_t *dev,
 	int rc = 0;
 
 	/* We can really only handle one reset at a time */
-	if (mutex_lock_interruptible(&h->reset_mutex) == -EINTR) {
+	if (mutex_lock_interruptible(&h->reset_mutex)) {
 		dev_warn(&h->pdev->dev, "concurrent reset wait interrupted.\n");
 		return -EINTR;
 	}
@@ -6500,7 +6500,7 @@ static int hpsa_big_passthru_ioctl(struct ctlr_info *h,
 		return -EINVAL;
 	if (ioc->buf_size > ioc->malloc_size * SG_ENTRIES_IN_CMD)
 		return -EINVAL;
-	buff = kcalloc(SG_ENTRIES_IN_CMD, sizeof(*buff), GFP_KERNEL);
+	buff = kzalloc_objs(*buff, SG_ENTRIES_IN_CMD);
 	if (!buff) {
 		status = -ENOMEM;
 		goto cleanup1;
@@ -8640,7 +8640,7 @@ static struct ctlr_info *hpda_alloc_ctlr_info(void)
 	if (!h)
 		return NULL;
 
-	h->reply_map = kcalloc(nr_cpu_ids, sizeof(*h->reply_map), GFP_KERNEL);
+	h->reply_map = kzalloc_objs(*h->reply_map, nr_cpu_ids);
 	if (!h->reply_map) {
 		kfree(h);
 		return NULL;

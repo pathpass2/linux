@@ -405,6 +405,20 @@ YAMAHA_DEVICE(0x105d, NULL),
 	}
 },
 {
+	USB_DEVICE(0x0499, 0x1516),
+	QUIRK_DRIVER_INFO {
+		/* .vendor_name = "Yamaha", */
+		/* .product_name = "ZG02", */
+		QUIRK_DATA_COMPOSITE {
+			{ QUIRK_DATA_STANDARD_AUDIO(1) },
+			{ QUIRK_DATA_STANDARD_AUDIO(2) },
+			{ QUIRK_DATA_MIDI_YAMAHA(3) },
+			{ QUIRK_DATA_IGNORE(4) },
+			QUIRK_COMPOSITE_END
+		}
+	}
+},
+{
 	USB_DEVICE(0x0499, 0x1718),
 	QUIRK_DRIVER_INFO {
 		/* .vendor_name = "Yamaha", */
@@ -2360,6 +2374,69 @@ YAMAHA_DEVICE(0x7010, "UB99"),
 	}
 },
 {
+	/*
+	 * Novation UltraNova: vendor-specific class descriptors, fixed
+	 * audio and MIDI layouts.  Only the audio and MIDI interfaces
+	 * (0 and 1) are grabbed; the vendor control interfaces (2/3)
+	 * are left unbound for userspace access.
+	 */
+	USB_DEVICE_INTERFACE_NUMBER(0x1235, 0x0011, 0),
+	QUIRK_DRIVER_INFO {
+		.vendor_name = "Novation",
+		.product_name = "UltraNova",
+		QUIRK_DATA_COMPOSITE {
+			{
+				QUIRK_DATA_AUDIOFORMAT(0) {
+					/* playback */
+					.formats = SNDRV_PCM_FMTBIT_S16_LE,
+					.channels = 4,
+					.iface = 0,
+					.altsetting = 1,
+					.altset_idx = 1,
+					.attributes = UAC_EP_CS_ATTR_SAMPLE_RATE,
+					.endpoint = 0x01,
+					.ep_attr = USB_ENDPOINT_XFER_ISOC |
+						   USB_ENDPOINT_SYNC_SYNC,
+					.maxpacksize = 392,
+					.rates = SNDRV_PCM_RATE_44100 |
+						 SNDRV_PCM_RATE_48000,
+					.rate_min = 44100,
+					.rate_max = 48000,
+					.nr_rates = 2,
+					.rate_table = (unsigned int[]) {
+						44100, 48000
+					}
+				}
+			},
+			{
+				QUIRK_DATA_AUDIOFORMAT(0) {
+					/* capture */
+					.formats = SNDRV_PCM_FMTBIT_S24_3LE,
+					.channels = 2,
+					.iface = 0,
+					.altsetting = 1,
+					.altset_idx = 1,
+					.attributes = UAC_EP_CS_ATTR_SAMPLE_RATE,
+					.endpoint = 0x82,
+					.ep_idx = 1,
+					.ep_attr = USB_ENDPOINT_XFER_ISOC,
+					.maxpacksize = 294,
+					.rates = SNDRV_PCM_RATE_44100 |
+						 SNDRV_PCM_RATE_48000,
+					.rate_min = 44100,
+					.rate_max = 48000,
+					.nr_rates = 2,
+					.rate_table = (unsigned int[]) {
+						44100, 48000
+					}
+				}
+			},
+			{ QUIRK_DATA_RAW_BYTES(1) },
+			QUIRK_COMPOSITE_END
+		}
+	}
+},
+{
 	USB_DEVICE(0x1235, 0x001e),
 	QUIRK_DRIVER_INFO {
 		/* .vendor_name = "Novation", */
@@ -3005,6 +3082,7 @@ YAMAHA_DEVICE(0x7010, "UB99"),
 					.rates = SNDRV_PCM_RATE_96000,
 					.ep_attr = USB_ENDPOINT_XFER_ISOC |
 						   USB_ENDPOINT_SYNC_ASYNC,
+					.datainterval = 1,
 					.rate_min = 96000,
 					.rate_max = 96000,
 					.nr_rates = 1,
@@ -3027,6 +3105,7 @@ YAMAHA_DEVICE(0x7010, "UB99"),
 					.rates = SNDRV_PCM_RATE_96000,
 					.ep_attr = USB_ENDPOINT_XFER_ISOC |
 						   USB_ENDPOINT_SYNC_ASYNC,
+					.datainterval = 1,
 					.rate_min = 96000,
 					.rate_max = 96000,
 					.nr_rates = 1,
@@ -4369,6 +4448,27 @@ QUIRK_RME_DIGIFACE(0x3fa0),
 			{ QUIRK_DATA_IGNORE(3) }, /* Firmware update */
 			QUIRK_COMPOSITE_END
 		}
+	}
+},
+
+/*
+ * CVT Touch Device (1ff7:0f33) is a USB composite device with HID + UAC
+ * audio interfaces. The device iProduct is "Touch Device" but Windows
+ * displays the audio function as "MAXHUB Speaker" (from iTerminal).
+ * Override the card shortname to match the Windows display name, while
+ * keeping normal stream/mixer creation (ifnum = QUIRK_NO_INTERFACE).
+ */
+{
+	.match_flags = USB_DEVICE_ID_MATCH_DEVICE |
+		       USB_DEVICE_ID_MATCH_INT_CLASS |
+		       USB_DEVICE_ID_MATCH_INT_SUBCLASS,
+	.idVendor = 0x1ff7,
+	.idProduct = 0x0f33,
+	.bInterfaceClass = USB_CLASS_AUDIO,
+	.bInterfaceSubClass = USB_SUBCLASS_AUDIOCONTROL,
+	.driver_info = (unsigned long) &(const struct snd_usb_audio_quirk) {
+		.product_name = "MAXHUB Speaker",
+		.ifnum = QUIRK_NO_INTERFACE,
 	}
 },
 

@@ -1848,8 +1848,8 @@ static int initialize_nocpsch(struct device_queue_manager *dqm)
 
 	pr_debug("num of pipes: %d\n", get_pipes_per_mec(dqm));
 
-	dqm->allocated_queues = kcalloc(get_pipes_per_mec(dqm),
-					sizeof(unsigned int), GFP_KERNEL);
+	dqm->allocated_queues = kzalloc_objs(unsigned int,
+					     get_pipes_per_mec(dqm));
 	if (!dqm->allocated_queues)
 		return -ENOMEM;
 
@@ -4215,6 +4215,15 @@ int dqm_debugfs_hqds(struct seq_file *m, void *data)
 		     queue++) {
 			r = dqm->dev->kfd2kgd->hqd_sdma_dump(
 				dqm->dev->adev, pipe, queue, &dump, &n_regs);
+			if (r == -EINVAL) {
+				/*
+				 * SDMA engine not present/mapped on this
+				 * device; skip it instead of aborting the
+				 * whole dump.
+				 */
+				r = 0;
+				break;
+			}
 			if (r)
 				break;
 

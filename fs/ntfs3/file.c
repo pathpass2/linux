@@ -20,6 +20,7 @@
 #include "debug.h"
 #include "ntfs.h"
 #include "ntfs_fs.h"
+#include <trace/events/ntfs3.h>
 
 /*
  * cifx, btrfs, exfat, ext4, f2fs use this constant.
@@ -183,6 +184,9 @@ static int ntfs_ioctl_set_volume_label(struct ntfs_sb_info *sbi, u8 __user *buf)
 	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
 
+	if (sb_rdonly(sbi->sb))
+		return -EROFS;
+
 	if (copy_from_user(user, buf, FSLABEL_MAX))
 		return -EFAULT;
 
@@ -315,7 +319,7 @@ static int ntfs_extend_initialized_size(struct file *file,
 	}
 
 	err = iomap_zero_range(inode, valid, new_valid - valid, NULL,
-			       &ntfs_iomap_ops, &ntfs_iomap_folio_ops, NULL);
+			       ntfs_iomap_next, &ntfs_iomap_folio_ops, NULL);
 	if (err) {
 		ni->i_valid = valid;
 		ntfs_inode_warn(inode,
@@ -554,7 +558,7 @@ static long ntfs_fallocate(struct file *file, int mode, loff_t vbo, loff_t len)
 		/* Zero head of punch. */
 		if (tmp > from) {
 			err = iomap_zero_range(inode, from, tmp - from, NULL,
-					       &ntfs_iomap_ops,
+					       ntfs_iomap_next,
 					       &ntfs_iomap_folio_ops, NULL);
 			if (err)
 				goto out;
@@ -572,7 +576,7 @@ static long ntfs_fallocate(struct file *file, int mode, loff_t vbo, loff_t len)
 		/* Zero tail of punch. */
 		if (vbo < end_a && end_a < end) {
 			err = iomap_zero_range(inode, end_a, end - end_a, NULL,
-					       &ntfs_iomap_ops,
+					       ntfs_iomap_next,
 					       &ntfs_iomap_folio_ops, NULL);
 			if (err)
 				goto out;
@@ -824,6 +828,8 @@ static ssize_t ntfs_file_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 	unsigned int dio_flags;
 	ssize_t ret;
 
+	trace_ntfs3_file_read_iter(iocb, iter);
+
 	ret = check_read_restriction(inode);
 	if (ret)
 		return ret;
@@ -890,7 +896,7 @@ static ssize_t ntfs_file_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 				goto out;
 		}
 
-		ret = iomap_dio_rw(iocb, iter, &ntfs_iomap_ops, NULL, dio_flags,
+		ret = iomap_dio_rw(iocb, iter, ntfs_iomap_next, NULL, dio_flags,
 				   NULL, 0);
 
 		if (ret <= 0)
@@ -1244,6 +1250,8 @@ static ssize_t ntfs_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	loff_t vbo, endbyte;
 	ssize_t ret, err;
 
+	trace_ntfs3_file_write_iter(iocb, from);
+
 	if (!inode_trylock(inode)) {
 		if (iocb->ki_flags & IOCB_NOWAIT)
 			return -EAGAIN;
@@ -1305,7 +1313,7 @@ static ssize_t ntfs_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	    !ntfs_should_use_dio(iocb, from)) {
 		iocb->ki_flags &= ~IOCB_DIRECT;
 
-		ret = iomap_file_buffered_write(iocb, from, &ntfs_iomap_ops,
+		ret = iomap_file_buffered_write(iocb, from, ntfs_iomap_next,
 						&ntfs_iomap_folio_ops, NULL);
 		inode_unlock(inode);
 
@@ -1322,7 +1330,7 @@ static ssize_t ntfs_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 			goto out;
 	}
 
-	ret = iomap_dio_rw(iocb, from, &ntfs_iomap_ops, NULL,
+	ret = iomap_dio_rw(iocb, from, ntfs_iomap_next, NULL,
 			   IOMAP_DIO_FORCE_WAIT, NULL, 0);
 
 	if (ret == -ENOTBLK) {
@@ -1335,7 +1343,7 @@ static ssize_t ntfs_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 		vbo = iocb->ki_pos;
 
 		iocb->ki_flags &= ~IOCB_DIRECT;
-		err = iomap_file_buffered_write(iocb, from, &ntfs_iomap_ops,
+		err = iomap_file_buffered_write(iocb, from, ntfs_iomap_next,
 						&ntfs_iomap_folio_ops, NULL);
 		if (err < 0) {
 			ret = err;
@@ -1485,7 +1493,7 @@ int ntfs_fiemap(struct inode *inode, struct fiemap_extent_info *fieinfo,
 
 	inode_lock_shared(inode);
 
-	err = iomap_fiemap(inode, fieinfo, start, len, &ntfs_iomap_ops);
+	err = iomap_fiemap(inode, fieinfo, start, len, ntfs_iomap_next);
 
 	inode_unlock_shared(inode);
 	return err;

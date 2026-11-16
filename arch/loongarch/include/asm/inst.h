@@ -535,6 +535,8 @@ u32 larch_insn_gen_lu32id(enum loongarch_gpr rd, int imm);
 u32 larch_insn_gen_lu52id(enum loongarch_gpr rd, enum loongarch_gpr rj, int imm);
 u32 larch_insn_gen_beq(enum loongarch_gpr rd, enum loongarch_gpr rj, int imm);
 u32 larch_insn_gen_bne(enum loongarch_gpr rd, enum loongarch_gpr rj, int imm);
+u32 larch_insn_gen_beqz(enum loongarch_gpr rj, int imm);
+u32 larch_insn_gen_bnez(enum loongarch_gpr rj, int imm);
 u32 larch_insn_gen_jirl(enum loongarch_gpr rd, enum loongarch_gpr rj, int imm);
 
 static inline bool signed_imm_check(long val, unsigned int bit)
@@ -591,6 +593,25 @@ static inline void emit_##NAME(union loongarch_instruction *insn,	\
 DEF_EMIT_REG1I20_FORMAT(lu12iw, lu12iw_op)
 DEF_EMIT_REG1I20_FORMAT(lu32id, lu32id_op)
 DEF_EMIT_REG1I20_FORMAT(pcaddu18i, pcaddu18i_op)
+
+#define DEF_EMIT_REG1I21_FORMAT(NAME, OP)				\
+static inline void emit_##NAME(union loongarch_instruction *insn,	\
+			       enum loongarch_gpr rj, int offset)	\
+{									\
+	unsigned int immediate_l, immediate_h;				\
+									\
+	immediate_l = offset & 0xffff;					\
+	offset >>= 16;							\
+	immediate_h = offset & 0x1f;					\
+									\
+	insn->reg1i21_format.opcode = OP;				\
+	insn->reg1i21_format.immediate_l = immediate_l;			\
+	insn->reg1i21_format.rj = rj;					\
+	insn->reg1i21_format.immediate_h = immediate_h;			\
+}
+
+DEF_EMIT_REG1I21_FORMAT(beqz, beqz_op)
+DEF_EMIT_REG1I21_FORMAT(bnez, bnez_op)
 
 #define DEF_EMIT_REG2_FORMAT(NAME, OP)					\
 static inline void emit_##NAME(union loongarch_instruction *insn,	\
@@ -752,11 +773,17 @@ static inline void emit_##NAME(union loongarch_instruction *insn,	\
 
 DEF_EMIT_REG3_FORMAT(addw, addw_op)
 DEF_EMIT_REG3_FORMAT(addd, addd_op)
+DEF_EMIT_REG3_FORMAT(subw, subw_op)
 DEF_EMIT_REG3_FORMAT(subd, subd_op)
+DEF_EMIT_REG3_FORMAT(mulw, mulw_op)
 DEF_EMIT_REG3_FORMAT(muld, muld_op)
+DEF_EMIT_REG3_FORMAT(divw, divw_op)
 DEF_EMIT_REG3_FORMAT(divd, divd_op)
+DEF_EMIT_REG3_FORMAT(modw, modw_op)
 DEF_EMIT_REG3_FORMAT(modd, modd_op)
+DEF_EMIT_REG3_FORMAT(divwu, divwu_op)
 DEF_EMIT_REG3_FORMAT(divdu, divdu_op)
+DEF_EMIT_REG3_FORMAT(modwu, modwu_op)
 DEF_EMIT_REG3_FORMAT(moddu, moddu_op)
 DEF_EMIT_REG3_FORMAT(maskeqz, maskeqz_op)
 DEF_EMIT_REG3_FORMAT(masknez, masknez_op)

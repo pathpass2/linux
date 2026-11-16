@@ -263,9 +263,8 @@ static int lan966x_port_ifh_xmit(struct sk_buff *skb,
 		lan_wr((__force u32)ifh[i], lan966x, QS_INJ_WR(grp));
 	}
 
-	/* Write frame */
-	count = DIV_ROUND_UP(skb->len, 4);
-	last = skb->len % 4;
+	/* Write the whole words of the frame */
+	count = skb->len / 4;
 	for (i = 0; i < count; ++i) {
 		/* Wait until the fifo is ready */
 		err = lan966x_port_inj_ready(lan966x, grp);
@@ -273,6 +272,20 @@ static int lan966x_port_ifh_xmit(struct sk_buff *skb,
 			goto err;
 
 		lan_wr(((u32 *)skb->data)[i], lan966x, QS_INJ_WR(grp));
+	}
+
+	/* Write the last 1 to 3 bytes, zero padded to a whole word */
+	last = skb->len % 4;
+	if (last) {
+		/* Wait until the fifo is ready */
+		err = lan966x_port_inj_ready(lan966x, grp);
+		if (err)
+			goto err;
+
+		val = 0;
+		memcpy(&val, skb->data + count * 4, last);
+		lan_wr(val, lan966x, QS_INJ_WR(grp));
+		++i;
 	}
 
 	/* Add padding */
@@ -1125,7 +1138,7 @@ static int lan966x_probe(struct platform_device *pdev)
 	u8 mac_addr[ETH_ALEN];
 	int err;
 
-	lan966x = devm_kzalloc(&pdev->dev, sizeof(*lan966x), GFP_KERNEL);
+	lan966x = devm_kzalloc_obj(&pdev->dev, *lan966x);
 	if (!lan966x)
 		return -ENOMEM;
 
@@ -1154,9 +1167,8 @@ static int lan966x_probe(struct platform_device *pdev)
 		return dev_err_probe(&pdev->dev, err, "Reset failed");
 
 	lan966x->num_phys_ports = NUM_PHYS_PORTS;
-	lan966x->ports = devm_kcalloc(&pdev->dev, lan966x->num_phys_ports,
-				      sizeof(struct lan966x_port *),
-				      GFP_KERNEL);
+	lan966x->ports = devm_kzalloc_objs(&pdev->dev, struct lan966x_port *,
+					   lan966x->num_phys_ports);
 	if (!lan966x->ports)
 		return -ENOMEM;
 

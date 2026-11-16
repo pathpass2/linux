@@ -353,7 +353,7 @@ static const struct snd_kcontrol_new es8326_snd_controls[] = {
 	SOC_SINGLE_TLV("DRE Gate Volume", ES8326_ADC_DRE_GATE,
 			4, 0x07, 0, dre_gate_tlv),
 	SOC_SINGLE("ALC Capture Switch", ES8326_ALC_RECOVERY, 3, 1, 0),
-	SOC_SINGLE_TLV("ALC Capture Recovery Level", ES8326_ALC_LEVEL,
+	SOC_SINGLE_TLV("ALC Capture Recovery Level", ES8326_ALC_RECOVERY,
 			0, 4, 0, drc_recovery_tlv),
 	SOC_ENUM("ALC Capture Winsize", alc_winsize),
 	SOC_SINGLE_TLV("ALC Capture Target Level", ES8326_ALC_LEVEL,
@@ -1427,7 +1427,7 @@ static int es8326_i2c_probe(struct i2c_client *i2c)
 	struct es8326_priv *es8326;
 	int ret;
 
-	es8326 = devm_kzalloc(&i2c->dev, sizeof(struct es8326_priv), GFP_KERNEL);
+	es8326 = devm_kzalloc_obj(&i2c->dev, struct es8326_priv);
 	if (!es8326)
 		return -ENOMEM;
 

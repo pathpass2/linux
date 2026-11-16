@@ -3026,7 +3026,7 @@ lpfc_hba_init(struct lpfc_hba *phba, uint32_t *hbainit)
 	uint32_t *HashWorking;
 	uint32_t *pwwnn = (uint32_t *) phba->wwnn;
 
-	HashWorking = kcalloc(80, sizeof(uint32_t), GFP_KERNEL);
+	HashWorking = kzalloc_objs(uint32_t, 80);
 	if (!HashWorking)
 		return;
 
@@ -8347,8 +8347,7 @@ lpfc_sli4_driver_resource_setup(struct lpfc_hba *phba)
 
 	/* Allocate eligible FCF bmask memory for FCF roundrobin failover */
 	longs = (LPFC_SLI4_FCF_TBL_INDX_MAX + BITS_PER_LONG - 1)/BITS_PER_LONG;
-	phba->fcf.fcf_rr_bmask = kcalloc(longs, sizeof(unsigned long),
-					 GFP_KERNEL);
+	phba->fcf.fcf_rr_bmask = kzalloc_objs(unsigned long, longs);
 	if (!phba->fcf.fcf_rr_bmask) {
 		lpfc_printf_log(phba, KERN_ERR, LOG_TRACE_EVENT,
 				"2759 Failed allocate memory for FCF round "
@@ -13514,6 +13513,9 @@ lpfc_sli4_hba_unset(struct lpfc_hba *phba)
 	/* Stop the SLI4 device port */
 	if (phba->pport)
 		phba->pport->work_port_events = 0;
+
+	/* All IO completed and queues released. Free the IOCBs. */
+	lpfc_free_iocb_list(phba);
 }
 
 /*
@@ -14948,11 +14950,20 @@ lpfc_pci_remove_one_s4(struct pci_dev *pdev)
 
 	/* Perform scsi free before driver resource_unset since scsi
 	 * buffers are released to their corresponding pools here.
+	 * lpfc_sli4_hba_unset() issues aborts via lpfc_sli_hba_iocb_abort(),
+	 * which allocates abort IOCBs from phba->lpfc_iocb_list; the pool
+	 * must still exist, so lpfc_free_iocb_list() runs only after unset.
 	 */
 	lpfc_io_free(phba);
-	lpfc_free_iocb_list(phba);
-	lpfc_sli4_hba_unset(phba);
 
+	/* Flush the PHBA WQ - there could be a race with ELS IOs while lpfc
+	 * is unloading.  This stops a race between completions, aborts and
+	 * resource recovery.
+	 */
+	if (phba->wq)
+		flush_workqueue(phba->wq);
+
+	lpfc_sli4_hba_unset(phba);
 	lpfc_unset_driver_resource_phase2(phba);
 	lpfc_sli4_driver_resource_unset(phba);
 

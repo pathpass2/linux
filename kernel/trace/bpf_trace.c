@@ -867,14 +867,11 @@ static int bpf_send_signal_common(u32 sig, enum pid_type type, struct task_struc
 		siginfo = &info;
 	}
 
-	/* Similar to bpf_probe_write_user, task needs to be
-	 * in a sound condition and kernel memory access be
-	 * permitted in order to send signal to the current
-	 * task.
+	/*
+	 * Similar to bpf_probe_write_user, task needs to be
+	 * in a sound condition.
 	 */
 	if (unlikely(task->flags & (PF_KTHREAD | PF_EXITING)))
-		return -EPERM;
-	if (unlikely(!nmi_uaccess_okay()))
 		return -EPERM;
 	/* Task should not be pid=1 to avoid kernel panic. */
 	if (unlikely(is_global_init(task)))
@@ -977,6 +974,10 @@ BTF_ID(func, vfs_getattr)
 BTF_ID(func, filp_close)
 BTF_SET_END(btf_allowlist_d_path)
 
+BTF_SET_START(btf_allowlist_d_path_fentry)
+BTF_ID(func, filp_close_sync)
+BTF_SET_END(btf_allowlist_d_path_fentry)
+
 static bool bpf_d_path_allowed(const struct bpf_prog *prog)
 {
 	if (prog->type == BPF_PROG_TYPE_TRACING &&
@@ -986,8 +987,15 @@ static bool bpf_d_path_allowed(const struct bpf_prog *prog)
 	if (prog->type == BPF_PROG_TYPE_LSM)
 		return bpf_lsm_is_sleepable_hook(prog->aux->attach_btf_id);
 
-	return btf_id_set_contains(&btf_allowlist_d_path,
-				   prog->aux->attach_btf_id);
+	if (btf_id_set_contains(&btf_allowlist_d_path,
+				prog->aux->attach_btf_id))
+		return true;
+
+	if (btf_id_set_contains(&btf_allowlist_d_path_fentry,
+				prog->aux->attach_btf_id))
+		return prog->expected_attach_type == BPF_TRACE_FENTRY;
+
+	return false;
 }
 
 BTF_ID_LIST_SINGLE(bpf_d_path_btf_ids, struct, path)
@@ -2056,7 +2064,7 @@ int perf_event_query_prog_array(struct perf_event *event, void __user *info)
 	ids_len = query.ids_len;
 	if (ids_len > BPF_TRACE_MAX_PROGS)
 		return -E2BIG;
-	ids = kcalloc(ids_len, sizeof(u32), GFP_USER | __GFP_NOWARN);
+	ids = kzalloc_objs(u32, ids_len, GFP_USER | __GFP_NOWARN);
 	if (!ids)
 		return -ENOMEM;
 	/*
@@ -2395,7 +2403,7 @@ static int copy_user_syms(struct user_syms *us, unsigned long __user *usyms, u32
 	if (!access_ok(usyms, cnt * sizeof(*usyms)))
 		return -EFAULT;
 
-	syms = kvmalloc_array(cnt, sizeof(*syms), GFP_KERNEL);
+	syms = kvmalloc_objs(*syms, cnt);
 	if (!syms)
 		return -ENOMEM;
 
@@ -2839,7 +2847,7 @@ int bpf_kprobe_multi_link_attach(const union bpf_attr *attr, struct bpf_prog *pr
 		return -E2BIG;
 
 	size = cnt * sizeof(*addrs);
-	addrs = kvmalloc_array(cnt, sizeof(*addrs), GFP_KERNEL);
+	addrs = kvmalloc_objs(*addrs, cnt);
 	if (!addrs)
 		return -ENOMEM;
 

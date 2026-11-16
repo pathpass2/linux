@@ -706,7 +706,7 @@ static int mpam_ris_create_locked(struct mpam_msc *msc, u8 ris_idx,
 	if (test_and_set_bit(ris_idx, &msc->ris_idxs))
 		return -EBUSY;
 
-	ris = devm_kzalloc(&msc->pdev->dev, sizeof(*ris), GFP_KERNEL);
+	ris = devm_kzalloc_obj(&msc->pdev->dev, *ris);
 	if (!ris)
 		return -ENOMEM;
 	init_garbage(&ris->garbage);
@@ -2037,8 +2037,10 @@ static int mpam_save_mbwu_state(void *arg)
 	struct mpam_class *class = ris->vmsc->comp->class;
 
 	for (i = 0; i < ris->props.num_mbwu_mon; i++) {
-		if (WARN_ON_ONCE(!mpam_mon_sel_lock(msc)))
-			return -EIO;
+		ACQUIRE(mon_sel_lock, guard)(msc);
+		ret = ACQUIRE_ERR(mon_sel_lock, &guard);
+		if (ret)
+			return ret;
 
 		mbwu_state = &ris->mbwu_state[i];
 		cfg = &mbwu_state->cfg;
@@ -2061,10 +2063,8 @@ static int mpam_save_mbwu_state(void *arg)
 		cfg->partid = FIELD_GET(MSMON_CFG_x_FLT_PARTID, cur_flt);
 		mbwu_state->enabled = FIELD_GET(MSMON_CFG_x_CTL_EN, cur_ctl);
 
-		if (!mbwu_state->enabled) {
-			mpam_mon_sel_unlock(msc);
+		if (!mbwu_state->enabled)
 			continue;
-		}
 
 		val = 0;
 		mbwu_arg = (struct mon_read) {
@@ -2088,8 +2088,6 @@ static int mpam_save_mbwu_state(void *arg)
 		ret = mpam_write_monsel_reg(msc, CFG_MBWU_CTL, 0);
 		if (ret)
 			return ret;
-
-		mpam_mon_sel_unlock(msc);
 	}
 
 	return 0;
@@ -2452,7 +2450,7 @@ static struct mpam_msc *do_mpam_msc_drv_probe(struct platform_device *pdev)
 
 	lockdep_assert_held(&mpam_list_lock);
 
-	msc = devm_kzalloc(&pdev->dev, sizeof(*msc), GFP_KERNEL);
+	msc = devm_kzalloc_obj(&pdev->dev, *msc);
 	if (!msc)
 		return ERR_PTR(-ENOMEM);
 	init_garbage(&msc->garbage);

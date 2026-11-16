@@ -74,39 +74,34 @@ static struct dentry *ovl_start_creating_temp(struct ovl_fs *ofs,
 			      &QSTR(name));
 }
 
+/*
+ * The whiteout is the source of a rename, so it has to be hashed.
+ * ovl_create_temp() takes care of that for a casefolded workdir.
+ */
 static struct dentry *ovl_whiteout(struct ovl_fs *ofs)
 {
 	int err;
 	struct dentry *whiteout, *link;
 	struct dentry *workdir = ofs->workdir;
-	struct inode *wdir = workdir->d_inode;
-	char name[OVL_TEMPNAME_SIZE];
 
 	guard(mutex)(&ofs->whiteout_lock);
 
 	if (!ofs->whiteout) {
-		whiteout = ovl_start_creating_temp(ofs, workdir, name);
+		whiteout = ovl_create_temp(ofs, workdir, &(struct ovl_cattr) {
+					.mode = S_IFCHR | WHITEOUT_MODE,
+					.rdev = WHITEOUT_DEV });
 		if (IS_ERR(whiteout))
 			return whiteout;
-		err = ovl_do_whiteout(ofs, wdir, whiteout);
-		if (!err)
-			ofs->whiteout = dget(whiteout);
-		end_creating(whiteout);
-		if (err)
-			return ERR_PTR(err);
+		ofs->whiteout = whiteout;
 	}
 
 	if (!ofs->no_shared_whiteout) {
-		link = ovl_start_creating_temp(ofs, workdir, name);
-		if (IS_ERR(link))
+		link = ovl_create_temp(ofs, workdir, &(struct ovl_cattr) {
+					.hardlink = ofs->whiteout });
+		if (!IS_ERR(link))
 			return link;
-		err = ovl_do_link(ofs, ofs->whiteout, wdir, link);
-		if (!err)
-			whiteout = dget(link);
-		end_creating(link);
-		if (!err)
-			return whiteout;
 
+		err = PTR_ERR(link);
 		if (err != -EMLINK) {
 			pr_warn("Failed to link whiteout - disabling whiteout inode sharing(nlink=%u, err=%u)\n",
 				ofs->whiteout->d_inode->i_nlink,
@@ -120,9 +115,10 @@ static struct dentry *ovl_whiteout(struct ovl_fs *ofs)
 }
 
 int ovl_cleanup_and_whiteout(struct ovl_fs *ofs, struct dentry *dir,
-			     struct dentry *dentry)
+			     struct dentry *dentry, const struct qstr *name)
 {
 	struct dentry *whiteout;
+	struct qstr last = QSTR_LEN(name->name, name->len);
 	struct renamedata rd = {};
 	int err;
 	int flags = 0;
@@ -139,9 +135,17 @@ int ovl_cleanup_and_whiteout(struct ovl_fs *ofs, struct dentry *dir,
 	rd.old_parent = ofs->workdir;
 	rd.new_parent = dir;
 	rd.flags = flags;
-	err = start_renaming_two_dentries(&rd, whiteout, dentry);
+	/*
+	 * The caller looked up @dentry by @name without a lock on @dir, and a
+	 * casefolded directory leaves a negative dentry unhashed.  Nothing tells
+	 * if such a dentry is still valid, so look up @name again with @dir locked.
+	 */
+	err = start_renaming_dentry(&rd, 0, whiteout, &last);
 	if (!err) {
-		err = ovl_do_rename_rd(&rd);
+		if (d_inode(rd.new_dentry) != d_inode(dentry))
+			err = -ESTALE;
+		else
+			err = ovl_do_rename_rd(&rd);
 		end_renaming(&rd);
 	}
 	if (err)
@@ -304,7 +308,6 @@ static int ovl_instantiate(struct dentry *dentry, struct inode *inode,
 	};
 
 	ovl_dentry_set_upper_alias(dentry);
-	ovl_dentry_init_reval(dentry, newdentry, NULL);
 
 	if (!hardlink) {
 		/*
@@ -335,6 +338,13 @@ static int ovl_instantiate(struct dentry *dentry, struct inode *inode,
 		d_mark_tmpfile(tmpfile, inode);
 
 	d_instantiate(dentry, inode);
+	/*
+	 * Unless it is a tmpfile, the dentry is hashed and a path walk can find
+	 * it at any time.  Set the revalidate flags only now, because
+	 * ovl_dentry_revalidate_common() does not expect them on a negative
+	 * dentry.
+	 */
+	ovl_dentry_init_reval(dentry, ovl_dentry_upper(dentry), NULL);
 	if (inode != oip.newinode) {
 		pr_warn_ratelimited("newly created inode found in cache (%pd2)\n",
 				    dentry);
@@ -358,7 +368,7 @@ static bool ovl_type_origin(struct dentry *dentry)
 }
 
 static int ovl_create_upper(struct dentry *dentry, struct inode *inode,
-			    struct ovl_cattr *attr)
+			    struct ovl_cattr *attr, bool origin)
 {
 	struct ovl_fs *ofs = OVL_FS(dentry->d_sb);
 	struct dentry *upperdir = ovl_dentry_upper(dentry->d_parent);
@@ -383,7 +393,7 @@ static int ovl_create_upper(struct dentry *dentry, struct inode *inode,
 		ovl_set_opaque(dentry, newdentry);
 	}
 
-	ovl_dir_modified(dentry->d_parent, false);
+	ovl_dir_modified(dentry->d_parent, origin);
 	err = ovl_instantiate(dentry, inode, newdentry, !!attr->hardlink, NULL);
 	if (err)
 		goto out_cleanup;
@@ -481,7 +491,7 @@ static int ovl_set_upper_acl(struct ovl_fs *ofs, struct dentry *upperdentry,
 }
 
 static int ovl_create_over_whiteout(struct dentry *dentry, struct inode *inode,
-				    struct ovl_cattr *cattr)
+				    struct ovl_cattr *cattr, bool origin)
 {
 	struct ovl_fs *ofs = OVL_FS(dentry->d_sb);
 	struct dentry *workdir = ovl_workdir(dentry);
@@ -572,7 +582,7 @@ static int ovl_create_over_whiteout(struct dentry *dentry, struct inode *inode,
 		if (err)
 			goto out_cleanup_unlocked;
 	}
-	ovl_dir_modified(dentry->d_parent, false);
+	ovl_dir_modified(dentry->d_parent, origin);
 	err = ovl_instantiate(dentry, inode, newdentry, hardlink, NULL);
 	if (err) {
 		ovl_cleanup(ofs, upperdir, newdentry);
@@ -637,12 +647,12 @@ DEFINE_CLASS(ovl_override_creator_creds,
 
 static int ovl_create_handle_whiteouts(struct dentry *dentry,
 				       struct inode *inode,
-				       struct ovl_cattr *attr)
+				       struct ovl_cattr *attr, bool origin)
 {
 	if (!ovl_dentry_is_whiteout(dentry))
-		return ovl_create_upper(dentry, inode, attr);
+		return ovl_create_upper(dentry, inode, attr, origin);
 
-	return ovl_create_over_whiteout(dentry, inode, attr);
+	return ovl_create_over_whiteout(dentry, inode, attr, origin);
 }
 
 static int ovl_create_or_link(struct dentry *dentry, struct inode *inode,
@@ -677,12 +687,14 @@ static int ovl_create_or_link(struct dentry *dentry, struct inode *inode,
 		 */
 
 		if (attr->hardlink)
-			return ovl_create_handle_whiteouts(dentry, inode, attr);
+			return ovl_create_handle_whiteouts(dentry, inode, attr,
+							   origin);
 
 		scoped_class(ovl_override_creator_creds, cred, original_creds, dentry, inode, attr->mode) {
 			if (IS_ERR(cred))
 				return PTR_ERR(cred);
-			return ovl_create_handle_whiteouts(dentry, inode, attr);
+			return ovl_create_handle_whiteouts(dentry, inode, attr,
+							   origin);
 		}
 	}
 	return err;
@@ -841,7 +853,7 @@ static int ovl_remove_and_whiteout(struct dentry *dentry,
 		goto out_dput_upper;
 	}
 
-	err = ovl_cleanup_and_whiteout(ofs, upperdir, upper);
+	err = ovl_cleanup_and_whiteout(ofs, upperdir, upper, &dentry->d_name);
 	if (!err)
 		ovl_dir_modified(dentry->d_parent, true);
 
@@ -1027,7 +1039,19 @@ static char *ovl_get_redirect(struct dentry *dentry, bool abs_redirect)
 		const char *name;
 		int thislen;
 
+		/*
+		 * A rename can move d to another directory at any time.  Hold
+		 * d_lock to copy the name that d has in this very parent, or
+		 * else the path mixes the old name with the new parent.
+		 */
+		tmp = dget_parent(d);
 		spin_lock(&d->d_lock);
+		if (unlikely(tmp != d->d_parent)) {
+			spin_unlock(&d->d_lock);
+			dput(tmp);
+			continue;
+		}
+
 		name = ovl_dentry_get_redirect(d);
 		if (name) {
 			thislen = strlen(name);
@@ -1040,13 +1064,13 @@ static char *ovl_get_redirect(struct dentry *dentry, bool abs_redirect)
 		if (thislen + (name[0] != '/') > buflen) {
 			ret = ERR_PTR(-EXDEV);
 			spin_unlock(&d->d_lock);
+			dput(tmp);
 			goto out_put;
 		}
 
 		buflen -= thislen;
 		memcpy(&buf[buflen], name, thislen);
 		spin_unlock(&d->d_lock);
-		tmp = dget_parent(d);
 
 		dput(d);
 		d = tmp;

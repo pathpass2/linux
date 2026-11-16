@@ -156,8 +156,7 @@ static void em_debug_create_pd(struct device *dev)
 
 	debugfs_create_file("id", 0444, d, dev->em_pd, &em_debug_id_fops);
 
-	em_dbg = devm_kcalloc(dev, dev->em_pd->nr_perf_states,
-			      sizeof(*em_dbg), GFP_KERNEL);
+	em_dbg = devm_kzalloc_objs(dev, *em_dbg, dev->em_pd->nr_perf_states);
 	if (!em_dbg)
 		return;
 
@@ -439,7 +438,9 @@ static int em_create_pd(struct device *dev, int nr_states,
 
 		cpumask_copy(em_span_cpus(pd), cpus);
 	} else {
-		pd = kzalloc_obj(*pd);
+		/* Readers expect pd->cpus to exist and remain empty. */
+		pd = kzalloc_flex(*pd, cpus,
+				  BITS_TO_LONGS(large_cpumask_bits));
 		if (!pd)
 			return -ENOMEM;
 	}

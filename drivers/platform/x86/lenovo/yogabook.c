@@ -120,10 +120,7 @@ static void yogabook_toggle_digitizer_mode(struct yogabook_data *data)
 	if (test_bit(YB_SUSPENDED, &data->flags))
 		return;
 
-	if (test_bit(YB_DIGITIZER_MODE, &data->flags))
-		clear_bit(YB_DIGITIZER_MODE, &data->flags);
-	else
-		set_bit(YB_DIGITIZER_MODE, &data->flags);
+	change_bit(YB_DIGITIZER_MODE, &data->flags);
 
 	/*
 	 * We are called from the ACPI core and the driver [un]binding which is
@@ -136,10 +133,8 @@ static irqreturn_t yogabook_backside_hall_irq(int irq, void *_data)
 {
 	struct yogabook_data *data = _data;
 
-	if (gpiod_get_value(data->backside_hall_gpio))
-		set_bit(YB_TABLET_MODE, &data->flags);
-	else
-		clear_bit(YB_TABLET_MODE, &data->flags);
+	assign_bit(YB_TABLET_MODE, &data->flags,
+		   gpiod_get_value(data->backside_hall_gpio));
 
 	schedule_work(&data->work);
 
@@ -337,7 +332,7 @@ static int yogabook_wmi_probe(struct wmi_device *wdev, const void *context)
 	struct yogabook_data *data;
 	int r;
 
-	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
+	data = devm_kzalloc_obj(dev, *data);
 	if (!data)
 		return -ENOMEM;
 
@@ -454,7 +449,7 @@ static int yogabook_pdev_probe(struct platform_device *pdev)
 	struct yogabook_data *data;
 	int r;
 
-	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
+	data = devm_kzalloc_obj(dev, *data);
 	if (!data)
 		return -ENOMEM;
 

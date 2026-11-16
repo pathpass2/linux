@@ -141,7 +141,7 @@ struct bpf_prog *bpf_prog_alloc_no_stats(unsigned int size, gfp_t gfp_extra_flag
 	mutex_init(&fp->aux->used_maps_mutex);
 	mutex_init(&fp->aux->ext_mutex);
 	mutex_init(&fp->aux->dst_mutex);
-	mutex_init(&fp->aux->st_ops_assoc_mutex);
+	spin_lock_init(&fp->aux->st_ops_assoc_lock);
 
 	return fp;
 }
@@ -206,7 +206,9 @@ void bpf_prog_jit_attempt_done(struct bpf_prog *prog)
  * here is relative to the prog itself instead of the main prog.
  * This array has one entry for each xlated bpf insn.
  *
- * jited_off is the byte off to the end of the jited insn.
+ * jited_off is the byte off to the end of the jited insn, counted from
+ * the start of the jited image, which is cfi_get_offset() bytes before
+ * prog->bpf_func.
  *
  * Hence, with
  * insn_start:
@@ -220,7 +222,7 @@ void bpf_prog_jit_attempt_done(struct bpf_prog *prog)
  *
  * For i > linfo_idx,
  *
- * jited_linfo[i] = prog->bpf_func +
+ * jited_linfo[i] = prog->bpf_func - cfi_get_offset() +
  *	insn_to_jit_off[linfo[i].insn_off - insn_start - 1]
  */
 void bpf_prog_fill_jited_linfo(struct bpf_prog *prog,
@@ -248,7 +250,7 @@ void bpf_prog_fill_jited_linfo(struct bpf_prog *prog,
 		/* The verifier ensures that linfo[i].insn_off is
 		 * strictly increasing
 		 */
-		jited_linfo[i] = prog->bpf_func +
+		jited_linfo[i] = prog->bpf_func - cfi_get_offset() +
 			insn_to_jit_off[linfo[i].insn_off - insn_start - 1];
 }
 
@@ -291,8 +293,8 @@ void __bpf_prog_free(struct bpf_prog *fp)
 #endif
 		mutex_destroy(&fp->aux->used_maps_mutex);
 		mutex_destroy(&fp->aux->dst_mutex);
-		mutex_destroy(&fp->aux->st_ops_assoc_mutex);
 		kfree(fp->aux->poke_tab);
+		free_percpu(fp->aux->timed_may_goto);
 		kfree(fp->aux);
 	}
 	free_percpu(fp->stats);
@@ -2640,8 +2642,7 @@ static bool bpf_prog_select_interpreter(struct bpf_prog *fp)
 /*
  * Whether a function has an insn that works with the arena base, which a JIT
  * sets up in the prologue when bpf_prog_uses_arena_insns() says so. Decided on
- * the final insns of the function: an access through an arena pointer, or
- * through a number in a program loaded with BPF_F_ARENA_SCALAR, has been
+ * the final insns of the function: an access through an arena pointer has been
  * rewritten to a BPF_PROBE_MEM32 form by then, a cast to the user address
  * space keeps BPF_ADDR_SPACE_CAST, and a kfunc call with an __arena argument,
  * which the JIT rebases, has a function model that says so. A load of an
@@ -2921,7 +2922,7 @@ int bpf_prog_array_copy_to_user(struct bpf_prog_array *array,
 	 *     bpf_prog_array_copy_to_user(..., cnt);
 	 * so below kcalloc doesn't need extra cnt > 0 check.
 	 */
-	ids = kcalloc(cnt, sizeof(u32), GFP_USER | __GFP_NOWARN);
+	ids = kzalloc_objs(u32, cnt, GFP_USER | __GFP_NOWARN);
 	if (!ids)
 		return -ENOMEM;
 	nospc = bpf_prog_array_copy_core(array, ids, cnt);
@@ -3519,12 +3520,6 @@ bool __weak bpf_jit_supports_arena(void)
 	return false;
 }
 
-/* Whether JIT takes BPF_REG_AX as the address of arena access */
-bool __weak bpf_jit_supports_arena_scalar(void)
-{
-	return false;
-}
-
 bool __weak bpf_jit_supports_insn(struct bpf_insn *insn, bool in_arena)
 {
 	return false;
@@ -3649,6 +3644,38 @@ u64 bpf_check_timed_may_goto(struct bpf_timed_may_goto *p)
 	}
 	/* Refresh the count for the stack frame. */
 	return BPF_MAX_TIMED_LOOPS;
+}
+
+/*
+ * The main prog sets count and timestamp in its first insns. A call of an async callback is an
+ * invocation of its own too, but it can interrupt an invocation of the prog on this cpu, or go on
+ * next to one that is preempted. So its caller sets count and timestamp, and puts the old ones
+ * back at the end. Not when another invocation has set them in the meantime: they are for that
+ * one now.
+ * The caller has disabled migration.
+ */
+void bpf_timed_may_goto_save(const struct bpf_prog *prog, struct bpf_timed_may_goto *saved)
+{
+	struct bpf_timed_may_goto *cur;
+
+	if (!prog->aux->timed_may_goto)
+		return;
+	cur = this_cpu_ptr(prog->aux->timed_may_goto);
+	*saved = *cur;
+	cur->count = BPF_MAX_TIMED_LOOPS;
+	cur->timestamp = 0;
+	cur->owner = saved;
+}
+
+void bpf_timed_may_goto_restore(const struct bpf_prog *prog, struct bpf_timed_may_goto *saved)
+{
+	struct bpf_timed_may_goto *cur;
+
+	if (!prog->aux->timed_may_goto)
+		return;
+	cur = this_cpu_ptr(prog->aux->timed_may_goto);
+	if (cur->owner == saved)
+		*cur = *saved;
 }
 
 /* for configs without MMU or 32-bit */

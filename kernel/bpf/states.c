@@ -1116,6 +1116,20 @@ static int propagate_precision(struct bpf_verifier_env *env,
 			bpf_bt_set_frame_slot(&env->bt, fr, i);
 			first = false;
 		}
+		for (i = 0; i < state->out_stack_arg_cnt; i++) {
+			state_reg = &state->stack_arg_regs[i];
+			if (state_reg->type != SCALAR_VALUE || !state_reg->precise)
+				continue;
+			if (env->log.level & BPF_LOG_LEVEL2) {
+				if (first)
+					verbose(env, "frame %d: propagating r11%d",
+						fr, -(i + 1) * BPF_REG_SIZE);
+				else
+					verbose(env, ",r11%d", -(i + 1) * BPF_REG_SIZE);
+			}
+			bt_set_frame_stack_arg_slot(&env->bt, fr, i);
+			first = false;
+		}
 		if (!first && (env->log.level & BPF_LOG_LEVEL2))
 			verbose(env, "\n");
 	}
@@ -1358,13 +1372,33 @@ static bool need_loop_checkpoint(struct bpf_verifier_env *env, int insn_idx)
 	return top->loop_id == insn_idx && top->terminates;
 }
 
+/* Searches for an innermost loop entry starting from an innermost frame. */
 static struct loop_stack_entry *current_loop(struct bpf_verifier_state *st)
 {
-	struct bpf_func_state *frame = st->frame[st->curframe];
+	struct bpf_func_state *frame;
+	int fr;
 
-	if (frame->loop_stack_cnt == 0)
-		return NULL;
-	return &frame->loop_stack[frame->loop_stack_cnt - 1];
+	for (fr = st->curframe; fr >= 0; fr--) {
+		frame = st->frame[fr];
+		if (frame->loop_stack_cnt)
+			return &frame->loop_stack[frame->loop_stack_cnt - 1];
+	}
+	return NULL;
+}
+
+/* True if any of the loops call chain is currently in terminates. */
+static bool in_a_terminating_loop(struct bpf_verifier_state *st)
+{
+	struct bpf_func_state *frame;
+	int l, fr;
+
+	for (fr = st->curframe; fr >= 0; fr--) {
+		frame = st->frame[fr];
+		for (l = frame->loop_stack_cnt - 1; l >= 0; l--)
+			if (frame->loop_stack[l].terminates)
+				return true;
+	}
+	return false;
 }
 
 int bpf_is_state_visited(struct bpf_verifier_env *env, int insn_idx)
@@ -1528,10 +1562,10 @@ int bpf_is_state_visited(struct bpf_verifier_env *env, int insn_idx)
 			 */
 			old_loop = current_loop(&sl->state);
 			cur_loop = current_loop(cur);
-			if (old_loop && cur_loop &&
-			    old_loop->terminates && cur_loop->terminates &&
-			    old_loop->entry_state == cur_loop->entry_state) {
-				if (states_equal(env, &sl->state, cur, RANGE_WITHIN)) {
+			if (old_loop && cur_loop && in_a_terminating_loop(cur)) {
+				if (old_loop->terminates && cur_loop->terminates &&
+				    old_loop->entry_state == cur_loop->entry_state &&
+				    states_equal(env, &sl->state, cur, RANGE_WITHIN)) {
 					loop = true;
 					goto hit;
 				}

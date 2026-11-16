@@ -528,7 +528,18 @@ out:
 #define aio_migrate_folio NULL
 #endif
 
+/*
+ * filemap_fault() reads a folio that it did not find in the page cache. All
+ * folios of a live ring are there, so the ring was truncated under the fault.
+ */
+static int aio_read_folio(struct file *file, struct folio *folio)
+{
+	folio_unlock(folio);
+	return -EIO;
+}
+
 static const struct address_space_operations aio_ctx_aops = {
+	.read_folio	= aio_read_folio,
 	.dirty_folio	= noop_dirty_folio,
 	.migrate_folio	= aio_migrate_folio,
 };
@@ -805,13 +816,12 @@ static struct kioctx *ioctx_alloc(unsigned nr_events)
 	 * counters at a time, so make sure that isn't 0:
 	 */
 	nr_events = max(nr_events, num_possible_cpus() * 4);
-	nr_events *= 2;
-
 	/* Prevent overflows */
-	if (nr_events > (0x10000000U / sizeof(struct io_event))) {
+	if (nr_events > (0x8000000U / sizeof(struct io_event))) {
 		pr_debug("ENOMEM: nr_events too high\n");
 		return ERR_PTR(-EINVAL);
 	}
+	nr_events *= 2;
 
 	if (!nr_events || (unsigned long)max_reqs > aio_max_nr)
 		return ERR_PTR(-EAGAIN);
@@ -951,7 +961,7 @@ void exit_aio(struct mm_struct *mm)
 	if (!table)
 		return;
 
-	atomic_set(&wait.count, table->nr);
+	atomic_set(&wait.count, table->nr + 1);
 	init_completion(&wait.comp);
 
 	skipped = 0;
@@ -975,7 +985,7 @@ void exit_aio(struct mm_struct *mm)
 		kill_ioctx(mm, ctx, &wait);
 	}
 
-	if (!atomic_sub_and_test(skipped, &wait.count)) {
+	if (!atomic_sub_and_test(skipped + 1, &wait.count)) {
 		/* Wait until all IO for the context are done. */
 		wait_for_completion(&wait.comp);
 	}

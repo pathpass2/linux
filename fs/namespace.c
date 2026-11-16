@@ -3296,7 +3296,7 @@ static struct mnt_namespace *create_new_namespace(struct path *path,
 	}
 
 	new_ns->root = new_ns_root;
-	ns_tree_add_raw(new_ns);
+	ns_tree_add(new_ns);
 	return new_ns;
 }
 
@@ -4394,8 +4394,6 @@ static struct mnt_namespace *alloc_mnt_ns(struct user_namespace *user_ns, bool a
 		dec_mnt_namespaces(ucounts);
 		return ERR_PTR(ret);
 	}
-	ns_tree_gen_id(new_ns);
-
 	new_ns->is_anon = anon;
 	refcount_set(&new_ns->passive, 1);
 	new_ns->mounts = RB_ROOT;
@@ -4499,7 +4497,7 @@ struct mnt_namespace *copy_mnt_ns(u64 flags, struct mnt_namespace *ns,
 				p = next_mnt(skip_mnt_tree(p), old);
 		}
 	}
-	ns_tree_add_raw(new_ns);
+	ns_tree_add(new_ns);
 	return new_ns;
 }
 
@@ -6067,7 +6065,8 @@ static int prepare_kstatmount(struct kstatmount *ks, struct mnt_id_req *kreq,
 	ks->bufsize = bufsize;
 
 	if (ks->mask & STATMOUNT_STRING_REQ) {
-		if (bufsize == sizeof(ks->sm))
+		/* Even the reserved empty string needs room past the fixed part. */
+		if (bufsize <= sizeof(ks->sm))
 			return -EOVERFLOW;
 
 		ks->seq.buf = kvmalloc(seq_size, GFP_KERNEL_ACCOUNT);
@@ -6261,6 +6260,8 @@ static ssize_t do_listmount(struct klistmount *kls, bool reverse)
 	} else {
 		if (reverse)
 			first = mnt_find_id_at_reverse(ns, last_mnt_id - 1);
+		else if (last_mnt_id == U64_MAX)
+			first = NULL; /* nothing comes after the largest id */
 		else
 			first = mnt_find_id_at(ns, last_mnt_id + 1);
 	}
@@ -6298,8 +6299,8 @@ static inline int prepare_klistmount(struct klistmount *kls, struct mnt_id_req *
 	kls->last_mnt_id = last_mnt_id;
 
 	kls->nr_mnt_ids = nr_mnt_ids;
-	kls->kmnt_ids = kvmalloc_array(nr_mnt_ids, sizeof(*kls->kmnt_ids),
-				       GFP_KERNEL_ACCOUNT);
+	kls->kmnt_ids = kvmalloc_objs(*kls->kmnt_ids, nr_mnt_ids,
+				      GFP_KERNEL_ACCOUNT);
 	if (!kls->kmnt_ids)
 		return -ENOMEM;
 
@@ -6491,8 +6492,6 @@ void __init mnt_init(void)
 				mphash_entries, 19,
 				HASH_ZERO,
 				&mp_hash_shift, &mp_hash_mask, 0, 0);
-
-	super_dev_init();
 
 	kernfs_init();
 
@@ -6726,7 +6725,7 @@ static int mntns_install(struct nsset *nsset, struct ns_common *ns)
 	if (is_anon_ns(mnt_ns))
 		return -EINVAL;
 
-	if (fs->users != 1)
+	if (current->fs->users != 1)
 		return -EINVAL;
 
 	get_mnt_ns(mnt_ns);

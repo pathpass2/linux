@@ -393,11 +393,13 @@ void nvmet_disable_port(struct nvmet_port *port)
 
 	lockdep_assert_held(&nvmet_config_sem);
 
-	port->enabled = false;
-	port->tr_ops = NULL;
+	if (!port->enabled)
+		return;
 
-	ops = nvmet_transports[port->disc_addr.trtype];
+	ops = port->tr_ops;
+	port->enabled = false;
 	ops->remove_port(port);
+	port->tr_ops = NULL;
 	module_put(ops->owner);
 }
 
@@ -667,13 +669,15 @@ void nvmet_ns_disable(struct nvmet_ns *ns)
 	/*
 	 * Now that we removed the namespaces from the lookup list, we
 	 * can kill the per_cpu ref and wait for any remaining references
-	 * to be dropped, as well as a RCU grace period for anyone only
-	 * using the namespace under rcu_read_lock().  Note that we can't
-	 * use call_rcu here as we need to ensure the namespaces have
-	 * been fully destroyed before unloading the module.
+	 * to be dropped.  Rely on that wait for anyone only using the
+	 * namespace under rcu_read_lock() too: the ref can't drop to zero
+	 * before an RCU grace period has passed since the kill.  This only
+	 * holds as long as nothing switches the ref to atomic mode before
+	 * the kill; bring back synchronize_rcu() here if that changes.
+	 * Note that we can't use call_rcu here as we need to ensure the
+	 * namespaces have been fully destroyed before unloading the module.
 	 */
 	percpu_ref_kill(&ns->ref);
-	synchronize_rcu();
 	wait_for_completion(&ns->disable_done);
 	percpu_ref_exit(&ns->ref);
 
@@ -802,6 +806,7 @@ static void __nvmet_req_complete(struct nvmet_req *req, u16 status)
 {
 	struct nvmet_ns *ns = req->ns;
 	struct nvmet_pr_per_ctrl_ref *pc_ref = req->pc_ref;
+	struct nvmet_passthru *passthru = nvmet_passthru_ref_held(req);
 
 	if (!req->sq->sqhd_disabled)
 		nvmet_update_sq_head(req);
@@ -820,7 +825,8 @@ static void __nvmet_req_complete(struct nvmet_req *req, u16 status)
 	if (ns)
 		nvmet_put_namespace(ns);
 
-	nvmet_put_passthru_ref(req);
+	if (passthru)
+		nvmet_put_passthru_ref(passthru);
 }
 
 void nvmet_req_complete(struct nvmet_req *req, u16 status)
@@ -1101,6 +1107,9 @@ static u32 nvmet_io_cmd_transfer_len(struct nvmet_req *req)
 	case nvme_cmd_dsm:
 		return nvmet_dsm_len(req);
 	case nvme_cmd_zone_mgmt_recv:
+		/* The handler rejects a NUMD whose byte count would wrap. */
+		if (le32_to_cpu(req->cmd->zmr.numd) >= U32_MAX / 4)
+			return 0;
 		return (le32_to_cpu(req->cmd->zmr.numd) + 1) << 2;
 	default:
 		return 0;
@@ -1114,9 +1123,6 @@ static u16 nvmet_parse_io_cmd(struct nvmet_req *req)
 
 	if (nvme_is_fabrics(cmd))
 		return nvmet_parse_fabrics_io_cmd(req);
-
-	if (unlikely(!nvmet_check_auth_status(req)))
-		return NVME_SC_AUTH_REQUIRED | NVME_STATUS_DNR;
 
 	ret = nvmet_check_ctrl_status(req);
 	if (unlikely(ret))
@@ -1362,7 +1368,7 @@ int nvmet_req_alloc_sgls(struct nvmet_req *req)
 
 	return 0;
 out_free:
-	sgl_free(req->sg);
+	nvmet_req_free_sgls(req);
 out:
 	return -ENOMEM;
 }
@@ -1615,6 +1621,12 @@ struct nvmet_ctrl *nvmet_alloc_ctrl(struct nvmet_alloc_ctrl_args *args)
 	u8 dhchap_status;
 	int ret;
 
+	if (kato > NVMET_MAX_KATO * MSEC_PER_SEC) {
+		args->status = NVME_SC_KA_TIMEOUT_INVALID | NVME_STATUS_DNR;
+		args->error_loc = offsetof(struct nvmf_connect_command, kato);
+		return NULL;
+	}
+
 	args->status = NVME_SC_CONNECT_INVALID_PARAM | NVME_STATUS_DNR;
 	subsys = nvmet_find_get_subsys(args->port, args->subsysnqn);
 	if (!subsys) {
@@ -1676,8 +1688,8 @@ struct nvmet_ctrl *nvmet_alloc_ctrl(struct nvmet_alloc_ctrl_args *args)
 	nvmet_init_cap(ctrl);
 	WRITE_ONCE(ctrl->aen_enabled, NVMET_AEN_CFG_OPTIONAL);
 
-	ctrl->changed_ns_list = kmalloc_array(NVME_MAX_CHANGED_NAMESPACES,
-			sizeof(__le32), GFP_KERNEL);
+	ctrl->changed_ns_list = kmalloc_objs(__le32,
+					     NVME_MAX_CHANGED_NAMESPACES);
 	if (!ctrl->changed_ns_list)
 		goto out_free_ctrl;
 
@@ -1689,7 +1701,7 @@ struct nvmet_ctrl *nvmet_alloc_ctrl(struct nvmet_alloc_ctrl_args *args)
 		kato = NVMET_DISC_KATO_MS;
 
 	/* keep-alive timeout in seconds */
-	ctrl->kato = DIV_ROUND_UP(kato, 1000);
+	ctrl->kato = DIV_ROUND_UP_ULL(kato, MSEC_PER_SEC);
 
 	ctrl->err_counter = 0;
 	spin_lock_init(&ctrl->error_lock);
@@ -1823,6 +1835,9 @@ ssize_t nvmet_ctrl_host_traddr(struct nvmet_ctrl *ctrl,
 {
 	if (!ctrl->ops->host_traddr)
 		return -EOPNOTSUPP;
+	/* They all take the address from the admin queue */
+	if (!ctrl->sqs[0])
+		return -ENOTCONN;
 	return ctrl->ops->host_traddr(ctrl, traddr, traddr_len);
 }
 

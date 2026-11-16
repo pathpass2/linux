@@ -92,7 +92,6 @@ static bool rt721_sdca_mbq_readable_register(struct device *dev, unsigned int re
 	case 0x2000026:
 	case 0x200002c:
 	case 0x200003c:
-	case 0x2000046:
 	case 0x5810000:
 	case 0x5810033:
 	case 0x5810036:
@@ -174,7 +173,6 @@ static bool rt721_sdca_mbq_volatile_register(struct device *dev, unsigned int re
 	case 0x2000026:
 	case 0x200002c:
 	case 0x2000030:
-	case 0x2000046:
 	case 0x2000067:
 	case 0x2000084:
 	case 0x2000086:
@@ -281,8 +279,8 @@ static int rt721_sdca_read_prop(struct sdw_slave *slave)
 	prop->sink_ports = BIT(3) | BIT(1); /* BITMAP:  00001010 */
 
 	nval = hweight32(prop->source_ports);
-	prop->src_dpn_prop = devm_kcalloc(&slave->dev, nval,
-		sizeof(*prop->src_dpn_prop), GFP_KERNEL);
+	prop->src_dpn_prop = devm_kzalloc_objs(&slave->dev, *prop->src_dpn_prop,
+					       nval);
 	if (!prop->src_dpn_prop)
 		return -ENOMEM;
 
@@ -299,8 +297,8 @@ static int rt721_sdca_read_prop(struct sdw_slave *slave)
 
 	/* do this again for sink now */
 	nval = hweight32(prop->sink_ports);
-	prop->sink_dpn_prop = devm_kcalloc(&slave->dev, nval,
-		sizeof(*prop->sink_dpn_prop), GFP_KERNEL);
+	prop->sink_dpn_prop = devm_kzalloc_objs(&slave->dev,
+						*prop->sink_dpn_prop, nval);
 	if (!prop->sink_dpn_prop)
 		return -ENOMEM;
 

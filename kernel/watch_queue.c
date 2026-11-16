@@ -77,13 +77,9 @@ static void watch_queue_pipe_buf_release(struct pipe_inode_info *pipe,
 	generic_pipe_buf_release(pipe, buf);
 }
 
-// No try_steal function => no stealing
-#define watch_queue_pipe_buf_try_steal NULL
-
 /* New data written to a pipe may be appended to a buffer with this type. */
 static const struct pipe_buf_operations watch_queue_pipe_buf_ops = {
 	.release	= watch_queue_pipe_buf_release,
-	.try_steal	= watch_queue_pipe_buf_try_steal,
 	.get		= generic_pipe_buf_get,
 };
 
@@ -212,7 +208,7 @@ void __post_watch_notification(struct watch_list *wlist,
 		if (watch->id != id)
 			continue;
 		n->info &= ~WATCH_INFO_ID;
-		n->info |= watch->info_id;
+		n->info |= watch->info_id & WATCH_INFO_ID;
 
 		wqueue = rcu_dereference(watch->queue);
 		wf = rcu_dereference(wqueue->filter);

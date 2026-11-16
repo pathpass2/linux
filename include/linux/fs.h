@@ -70,7 +70,8 @@ struct fsnotify_mark_connector;
 struct fs_context;
 struct fs_parameter_spec;
 struct file_kattr;
-struct iomap_ops;
+struct iomap_iter;
+struct iomap;
 struct delegated_inode;
 
 extern void __init inode_init(void);
@@ -815,7 +816,9 @@ struct inode {
 	/* 32-bit hole */
 	struct rw_semaphore	i_rwsem;
 
-	unsigned long		dirtied_when;	/* jiffies of first dirtying */
+	/* Timestamp for writeback list ordering and age checks (jiffies). */
+	unsigned long		dirtied_when;
+	/* Start time for deciding when lazytime updates need writeback (jiffies). */
 	unsigned long		dirtied_time_when;
 
 	struct hlist_node	i_hash;
@@ -2081,7 +2084,9 @@ int remap_verify_area(struct file *file, loff_t pos, loff_t len, bool write);
 int __generic_remap_file_range_prep(struct file *file_in, loff_t pos_in,
 				    struct file *file_out, loff_t pos_out,
 				    loff_t *len, unsigned int remap_flags,
-				    const struct iomap_ops *dax_read_ops);
+				    int (*dax_read_next)(const struct iomap_iter *iter,
+							 struct iomap *iomap,
+							 struct iomap *srcmap));
 int generic_remap_file_range_prep(struct file *file_in, loff_t pos_in,
 				  struct file *file_out, loff_t pos_out,
 				  loff_t *count, unsigned int remap_flags);
@@ -3330,7 +3335,7 @@ struct offset_ctx {
 	unsigned long		next_offset;
 };
 
-void simple_offset_init(struct offset_ctx *octx);
+void simple_offset_init(struct offset_ctx *octx, struct inode *dir);
 int simple_offset_add(struct offset_ctx *octx, struct dentry *dentry);
 void simple_offset_remove(struct offset_ctx *octx, struct dentry *dentry);
 void simple_offset_rename(struct inode *old_dir, struct dentry *old_dentry,

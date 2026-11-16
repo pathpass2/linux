@@ -150,7 +150,7 @@ static struct kfd_mem_obj *allocate_mqd(struct mqd_manager *mm,
 		mqd_size *= NUM_XCC(node->xcc_mask);
 
 	if (node->kfd->cwsr_enabled && (q->type == KFD_QUEUE_TYPE_COMPUTE)) {
-		mqd_mem_obj = kzalloc(sizeof(struct kfd_mem_obj), GFP_KERNEL);
+		mqd_mem_obj = kzalloc_obj(struct kfd_mem_obj);
 		if (!mqd_mem_obj)
 			return NULL;
 		retval = amdgpu_amdkfd_alloc_kernel_mem(node->adev,
@@ -690,6 +690,8 @@ static void restore_mqd_v12_1(struct mqd_manager *mm, void **mqd,
 	memset(m, 0, AMDGPU_MQD_SIZE_ALIGN(mm->mqd_size) *
 		     NUM_XCC(mm->dev->xcc_mask));
 	memcpy(m, mqd_src, sizeof(*m));
+	kfd_mqd_restore_ctl_stack(&m->cp_hqd_cntl_stack_size, &m->cp_hqd_cntl_stack_offset,
+				  &m->cp_hqd_wg_state_offset, qp->ctl_stack_size);
 
 	/* Update MQD base address to the newly allocated location */
 	m->cp_mqd_base_addr_lo = lower_32_bits(addr);

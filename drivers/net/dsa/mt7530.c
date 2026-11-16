@@ -2201,7 +2201,7 @@ mt7530_setup_gpio(struct mt7530_priv *priv)
 	struct device *dev = priv->dev;
 	struct gpio_chip *gc;
 
-	gc = devm_kzalloc(dev, sizeof(*gc), GFP_KERNEL);
+	gc = devm_kzalloc_obj(dev, *gc);
 	if (!gc)
 		return -ENOMEM;
 
@@ -3300,10 +3300,13 @@ mt753x_conduit_state_change(struct dsa_switch *ds,
 
 	/* Set the CPU port to trap frames to for MT7530. Trapped frames will be
 	 * forwarded to the numerically smallest CPU port whose conduit
-	 * interface is up.
+	 * interface is up. On EN7581, trapped BPDUs do not reach the CPU port
+	 * without this, even with the CPU port bitmap set. AN7583 is set up
+	 * the same way as EN7581.
 	 */
 	if (priv->id != ID_MT7530 && priv->id != ID_MT7621 &&
-	    priv->id != ID_EN7528)
+	    priv->id != ID_EN7528 &&
+	    priv->id != ID_EN7581 && priv->id != ID_AN7583)
 		return;
 
 	mask = BIT(cpu_dp->index);
@@ -3529,7 +3532,7 @@ mt7530_probe_common(struct mt7530_priv *priv)
 {
 	struct device *dev = priv->dev;
 
-	priv->ds = devm_kzalloc(dev, sizeof(*priv->ds), GFP_KERNEL);
+	priv->ds = devm_kzalloc_obj(dev, *priv->ds);
 	if (!priv->ds)
 		return -ENOMEM;
 

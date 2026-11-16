@@ -4303,7 +4303,7 @@ static void __cgroup_kill(struct cgroup *cgrp)
 	cgrp->kill_seq++;
 	spin_unlock_irq(&css_set_lock);
 
-	css_task_iter_start(&cgrp->self, CSS_TASK_ITER_PROCS | CSS_TASK_ITER_THREADED, &it);
+	css_task_iter_start(&cgrp->self, CSS_TASK_ITER_THREADED, &it);
 	while ((task = css_task_iter_next(&it))) {
 		/* Ignore kernel threads here. */
 		if (task->flags & PF_KTHREAD)
@@ -4806,19 +4806,21 @@ void cgroup_file_notify(struct cgroup_file *cfile)
 	if (!READ_ONCE(cfile->kn))
 		return;
 
-	last = READ_ONCE(cfile->notified_at);
-	next = last + CGROUP_FILE_NOTIFY_MIN_INTV;
-	if (time_in_range(jiffies, last, next)) {
-		timer_reduce(&cfile->notify_timer, next);
-		if (timer_pending(&cfile->notify_timer))
-			return;
-	}
+	if (timer_pending(&cfile->notify_timer))
+		return;
 
 	spin_lock_irqsave(&cfile->lock, flags);
 	if (cfile->kn) {
-		kn = cfile->kn;
-		kernfs_get(kn);
-		WRITE_ONCE(cfile->notified_at, jiffies);
+		last = cfile->notified_at;
+		next = last + CGROUP_FILE_NOTIFY_MIN_INTV;
+
+		if (time_in_range(jiffies, last, next)) {
+			timer_reduce(&cfile->notify_timer, next);
+		} else {
+			kn = cfile->kn;
+			kernfs_get(kn);
+			cfile->notified_at = jiffies;
+		}
 	}
 	spin_unlock_irqrestore(&cfile->lock, flags);
 
@@ -6880,6 +6882,31 @@ static struct cgroup *cgroup_get_from_file(struct file *f)
 	return cgrp;
 }
 
+/*
+ * A new threadgroup gets its own cgroup_threadgroup_rwsem.  Once its PID is
+ * visible, a cgroup.procs writer can find the child and lock that rwsem even
+ * though cgroup_post_fork() has not linked the child to its css_set yet.
+ *
+ * cgroup_can_fork() already holds the global read lock, which keeps
+ * cgroup_enable_per_threadgroup_rwsem stable.  Lock the child's rwsem as a
+ * nested instance until cgroup_post_fork() finishes.  Threads share their
+ * parent's signal_struct and are covered by the existing read lock.
+ */
+static void cgroup_fork_child_lock(struct task_struct *child)
+{
+	if (cgroup_enable_per_threadgroup_rwsem &&
+	    child->signal != current->signal)
+		down_read_nested(&child->signal->cgroup_threadgroup_rwsem,
+				 SINGLE_DEPTH_NESTING);
+}
+
+static void cgroup_fork_child_unlock(struct task_struct *child)
+{
+	if (cgroup_enable_per_threadgroup_rwsem &&
+	    child->signal != current->signal)
+		up_read(&child->signal->cgroup_threadgroup_rwsem);
+}
+
 /**
  * cgroup_css_set_fork - find or create a css_set for a child process
  * @kargs: the arguments passed to create the child process
@@ -7045,6 +7072,7 @@ int cgroup_can_fork(struct task_struct *child, struct kernel_clone_args *kargs)
 			goto out_revert;
 	} while_each_subsys_mask();
 
+	cgroup_fork_child_lock(child);
 	return 0;
 
 out_revert:
@@ -7079,6 +7107,7 @@ void cgroup_cancel_fork(struct task_struct *child,
 		if (ss->cancel_fork)
 			ss->cancel_fork(child, kargs->cset);
 
+	cgroup_fork_child_unlock(child);
 	cgroup_css_set_put_fork(kargs);
 }
 
@@ -7176,6 +7205,7 @@ void cgroup_post_fork(struct task_struct *child,
 	if (unlikely(kill))
 		do_send_sig_info(SIGKILL, SEND_SIG_NOINFO, child, PIDTYPE_TGID);
 
+	cgroup_fork_child_unlock(child);
 	cgroup_css_set_put_fork(kargs);
 }
 

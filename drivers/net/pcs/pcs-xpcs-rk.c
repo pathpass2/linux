@@ -225,7 +225,7 @@ static struct dw_xpcs_rk *xpcs_rk_create_data(struct platform_device *pdev)
 {
 	struct dw_xpcs_rk *pxpcs;
 
-	pxpcs = devm_kzalloc(&pdev->dev, sizeof(*pxpcs), GFP_KERNEL);
+	pxpcs = devm_kzalloc_obj(&pdev->dev, *pxpcs);
 	if (!pxpcs)
 		return ERR_PTR(-ENOMEM);
 
@@ -365,7 +365,7 @@ static int xpcs_rk_init_clk(struct dw_xpcs_rk *pxpcs)
 
 	ret = devm_add_action_or_reset(dev, xpcs_rk_exit_clk, pxpcs);
 	if (ret) {
-		dev_err(dev, "Failed to register devm for EEE clock: %d\n", ret);
+		dev_err(dev, "Failed to register devm for xpcs_rk_exit_clk: %d\n", ret);
 		return ret;
 	}
 

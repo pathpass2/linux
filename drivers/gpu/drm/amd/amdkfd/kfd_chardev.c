@@ -427,15 +427,13 @@ static int kfd_ioctl_create_queue(struct file *filep, struct kfd_process *p,
 		}
 	}
 
-	if (!pdd->qpd.proc_doorbells) {
-		err = kfd_alloc_process_doorbells(dev->kfd, pdd);
-		if (err) {
-			pr_debug("failed to allocate process doorbells\n");
-			goto err_bind_process;
-		}
+	err = kfd_alloc_process_doorbells(dev->kfd, pdd);
+	if (err) {
+		pr_debug("failed to allocate process doorbells\n");
+		goto err_bind_process;
 	}
 
-	err = kfd_queue_acquire_buffers(pdd, &q_properties);
+	err = kfd_queue_acquire_buffers(pdd, &q_properties, false);
 	if (err) {
 		pr_debug("failed to acquire user queue buffers\n");
 		goto err_acquire_queue_buf;
@@ -480,7 +478,7 @@ static int kfd_ioctl_create_queue(struct file *filep, struct kfd_process *p,
 
 err_create_queue:
 	kfd_queue_unref_bo_vas(pdd, &q_properties);
-	kfd_queue_release_buffers(pdd, &q_properties);
+	kfd_queue_release_buffers(pdd, &q_properties, false);
 err_acquire_queue_buf:
 err_sdma_engine_id:
 err_bind_process:
@@ -1112,11 +1110,19 @@ static int kfd_ioctl_get_available_memory(struct file *filep,
 {
 	struct kfd_ioctl_get_available_memory_args *args = data;
 	struct kfd_process_device *pdd = kfd_lock_pdd_by_id(p, args->gpu_id);
+	struct amdgpu_device *adev;
+	size_t available;
 
 	if (!pdd)
 		return -EINVAL;
-	args->available = amdgpu_amdkfd_get_available_memory(pdd->dev->adev,
-							pdd->dev->node_id);
+
+	adev = pdd->dev->adev;
+	available = amdgpu_amdkfd_get_available_memory(adev, pdd->dev->node_id);
+	if (adev->apu_prefer_gtt)
+		args->available = ALIGN_DOWN(available, PAGE_SIZE);
+	else
+		args->available = ALIGN_DOWN(available, VRAM_AVAILABLITY_ALIGN);
+
 	kfd_unlock_pdd(pdd);
 	return 0;
 }
@@ -1304,6 +1310,9 @@ static int kfd_ioctl_free_memory_of_gpu(struct file *filep,
 		ret = -EINVAL;
 		goto err_unlock;
 	}
+
+	/* Queues a reset could not stop may still access the buffer */
+	kfd_process_wait_gpu_reset_complete(p);
 
 	ret = amdgpu_amdkfd_gpuvm_free_memory_of_gpu(pdd->dev->adev,
 				(struct kgd_mem *)mem, pdd->drm_priv, &size);
@@ -2166,7 +2175,9 @@ static int criu_checkpoint_bos(struct kfd_process *p,
 				bo_bucket->offset = amdgpu_bo_mmap_offset(dumper_bo);
 
 			for (i = 0; i < p->n_pdds; i++) {
-				if (amdgpu_amdkfd_bo_mapped_to_dev(p->pdds[i]->drm_priv, kgd_mem))
+				/* nothing is mapped on a GPU without a VM */
+				if (p->pdds[i]->drm_priv &&
+				    amdgpu_amdkfd_bo_mapped_to_dev(p->pdds[i]->drm_priv, kgd_mem))
 					bo_priv->mapped_gpuids[dev_idx++] = p->pdds[i]->user_gpu_id;
 			}
 
@@ -2455,11 +2466,9 @@ static int criu_restore_devices(struct kfd_process *p,
 			goto exit;
 		}
 
-		if (!pdd->qpd.proc_doorbells) {
-			ret = kfd_alloc_process_doorbells(dev->kfd, pdd);
-			if (ret)
-				goto exit;
-		}
+		ret = kfd_alloc_process_doorbells(dev->kfd, pdd);
+		if (ret)
+			goto exit;
 	}
 
 	/*
@@ -2854,6 +2863,8 @@ static int criu_resume(struct file *filep,
 		goto exit;
 	}
 
+	kfd_criu_resume_queues(target);
+
 	ret =  amdgpu_amdkfd_criu_resume(target->kgd_process_info);
 	if (ret)
 		pr_err("amdgpu_amdkfd_criu_resume failed for %i\n", args->pid);
@@ -2869,6 +2880,7 @@ static int criu_process_info(struct file *filep,
 				struct kfd_process *p,
 				struct kfd_ioctl_criu_args *args)
 {
+	bool paused_here = false;
 	int ret = 0;
 
 	mutex_lock(&p->mutex);
@@ -2879,11 +2891,15 @@ static int criu_process_info(struct file *filep,
 		goto err_unlock;
 	}
 
-	ret = kfd_process_evict_queues(p, KFD_QUEUE_EVICTION_CRIU_CHECKPOINT);
-	if (ret)
-		goto err_unlock;
+	/* UNPAUSE restores the queues once, so evict them only once */
+	if (!p->queues_paused) {
+		ret = kfd_process_evict_queues(p, KFD_QUEUE_EVICTION_CRIU_CHECKPOINT);
+		if (ret)
+			goto err_unlock;
 
-	p->queues_paused = true;
+		p->queues_paused = true;
+		paused_here = true;
+	}
 
 	args->pid = task_pid_nr_ns(p->lead_thread,
 					task_active_pid_ns(p->lead_thread));
@@ -2898,7 +2914,7 @@ static int criu_process_info(struct file *filep,
 				args->priv_data_size);
 
 err_unlock:
-	if (ret) {
+	if (ret && paused_here) {
 		kfd_process_restore_queues(p);
 		p->queues_paused = false;
 	}

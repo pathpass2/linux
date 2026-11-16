@@ -2655,6 +2655,12 @@ static int tpacket_fill_skb(struct packet_sock *po, struct sk_buff *skb,
 	}
 
 	offset = offset_in_page(data);
+	if (unlikely(to_write > MAX_SKB_FRAGS * PAGE_SIZE - offset)) {
+		net_warn_ratelimited("Packet exceed the number of skb frags(%u)\n",
+				     (unsigned int)MAX_SKB_FRAGS);
+		return -EFAULT;
+	}
+
 	len_max = PAGE_SIZE - offset;
 	len = ((to_write > len_max) ? len_max : to_write);
 
@@ -2665,12 +2671,6 @@ static int tpacket_fill_skb(struct packet_sock *po, struct sk_buff *skb,
 
 	while (likely(to_write)) {
 		nr_frags = skb_shinfo(skb)->nr_frags;
-
-		if (unlikely(nr_frags >= MAX_SKB_FRAGS)) {
-			pr_err("Packet exceed the number of skb frags(%u)\n",
-			       (unsigned int)MAX_SKB_FRAGS);
-			return -EFAULT;
-		}
 
 		page = pgv_to_page(data);
 		data += len;
@@ -2932,7 +2932,7 @@ tpacket_error:
 		if (has_vnet_hdr)
 			virtio_net_hdr_set_proto(skb, &vnet_hdr);
 
-		uarg = kmalloc(sizeof(*uarg), GFP_KERNEL);
+		uarg = kmalloc_obj(*uarg);
 		if (unlikely(!uarg)) {
 			if (likely(len_sum > 0))
 				err = len_sum;

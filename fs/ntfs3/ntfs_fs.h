@@ -12,6 +12,7 @@
 #include <linux/blkdev.h>
 #include <linux/buffer_head.h>
 #include <linux/fs.h>
+#include <linux/iomap.h>
 #include <linux/highmem.h>
 #include <linux/kernel.h>
 #include <linux/hex.h>
@@ -113,6 +114,7 @@ struct ntfs_mount_options {
 	unsigned nocase : 1; /* case insensitive. */
 	unsigned delalloc : 1; /* delay allocation. */
 	unsigned ads : 1; /* ads support. */
+	unsigned ugm : 1; /* store user/group/mode in xattr. */
 };
 
 /* Special value to unpack and deallocate. */
@@ -467,8 +469,8 @@ int attr_allocate_clusters(struct ntfs_sb_info *sbi, struct runs_tree *run,
 			   CLST *new_len);
 int attr_make_nonresident(struct ntfs_inode *ni, struct ATTRIB *attr,
 			  struct ATTR_LIST_ENTRY *le, struct mft_inode *mi,
-			  u64 new_size, struct runs_tree *run,
-			  struct ATTRIB **ins_attr, struct page *page);
+			  struct runs_tree *run, struct ATTRIB **ins_attr,
+			  struct page *page);
 int attr_set_size_ex(struct ntfs_inode *ni, enum ATTR_TYPE type,
 		     const __le16 *name, u8 name_len, struct runs_tree *run,
 		     u64 new_size, const u64 *new_valid, bool keep_prealloc,
@@ -813,7 +815,7 @@ int ntfs_create_inode(const struct mnt_idmap *idmap, struct inode *dir,
 int ntfs_link_inode(struct inode *inode, struct dentry *dentry);
 int ntfs_unlink_inode(struct inode *dir, const struct dentry *dentry);
 void ntfs_evict_inode(struct inode *inode);
-extern const struct iomap_ops ntfs_iomap_ops;
+DECLARE_IOMAP_ITER_NEXT(ntfs_iomap_next);
 extern const struct iomap_write_ops ntfs_iomap_folio_ops;
 extern const struct inode_operations ntfs_link_inode_operations;
 extern const struct address_space_operations ntfs_aops;

@@ -66,7 +66,6 @@ static struct ipc_namespace *create_ipc_ns(struct user_namespace *user_ns,
 	if (err)
 		goto fail_free;
 
-	ns_tree_gen_id(ns);
 	ns->user_ns = get_user_ns(user_ns);
 	ns->ucounts = ucounts;
 
@@ -87,7 +86,7 @@ static struct ipc_namespace *create_ipc_ns(struct user_namespace *user_ns,
 
 	sem_init_ns(ns);
 	shm_init_ns(ns);
-	ns_tree_add_raw(ns);
+	ns_tree_add(ns);
 
 	return ns;
 
@@ -255,3 +254,10 @@ const struct proc_ns_operations ipcns_operations = {
 	.install	= ipcns_install,
 	.owner		= ipcns_owner,
 };
+
+static int __init ipc_ns_tree_init(void)
+{
+	ns_tree_add(&init_ipc_ns);
+	return 0;
+}
+pure_initcall(ipc_ns_tree_init);

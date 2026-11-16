@@ -758,9 +758,15 @@ struct bpf_prog_stats {
 	struct u64_stats_sync syncp;
 } __aligned(2 * sizeof(u64));
 
+/*
+ * Per-cpu memory of a prog. All may_goto of one invocation of the prog use it. An invocation is
+ * one call from the kernel into the main prog, with the subprogs and sync callbacks it reaches.
+ */
 struct bpf_timed_may_goto {
 	u64 count;
 	u64 timestamp;
+	/* the async callback that has set count and timestamp, see bpf_timed_may_goto_save() */
+	void *owner;
 };
 
 struct sk_filter {
@@ -1287,7 +1293,6 @@ bool bpf_jit_supports_far_kfunc_call(void);
 bool bpf_jit_supports_exceptions(void);
 bool bpf_jit_supports_ptr_xchg(void);
 bool bpf_jit_supports_arena(void);
-bool bpf_jit_supports_arena_scalar(void);
 bool bpf_jit_supports_insn(struct bpf_insn *insn, bool in_arena);
 bool bpf_jit_supports_private_stack(void);
 bool bpf_jit_supports_large_stack(void);
@@ -1329,6 +1334,8 @@ u64 bpf_arch_uaddress_limit(void);
 void arch_bpf_stack_walk(bool (*consume_fn)(void *cookie, u64 ip, u64 sp, u64 bp), void *cookie);
 u64 arch_bpf_timed_may_goto(void);
 u64 bpf_check_timed_may_goto(struct bpf_timed_may_goto *);
+void bpf_timed_may_goto_save(const struct bpf_prog *prog, struct bpf_timed_may_goto *saved);
+void bpf_timed_may_goto_restore(const struct bpf_prog *prog, struct bpf_timed_may_goto *saved);
 bool bpf_helper_changes_pkt_data(enum bpf_func_id func_id);
 
 static inline bool bpf_dump_raw_ok(const struct cred *cred)

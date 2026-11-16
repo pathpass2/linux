@@ -1000,8 +1000,8 @@ int kvm_vgic_v5_irs_init(struct kvm *kvm, unsigned int nr_spis)
 	 * provide at least 32 SPIs, so we always meet alignment requirements.
 	 */
 	if (nr_spis) {
-		dist->spis = kcalloc(nr_spis, sizeof(struct vgic_irq),
-				     GFP_KERNEL_ACCOUNT);
+		dist->spis = kzalloc_objs(struct vgic_irq, nr_spis,
+					  GFP_KERNEL_ACCOUNT);
 		if (!dist->spis)
 			return -ENOMEM;
 
@@ -1134,7 +1134,7 @@ int vgic_v5_has_attr_regs(struct kvm_device *dev, struct kvm_device_attr *attr)
 	const struct vgic_register_region *region;
 	struct vgic_reg_attr reg_attr;
 	struct kvm_vcpu *vcpu;
-	gpa_t addr, offset;
+	gpa_t offset;
 	int ret, align;
 
 	ret = vgic_v5_parse_attr(dev, attr, &reg_attr);
@@ -1142,7 +1142,6 @@ int vgic_v5_has_attr_regs(struct kvm_device *dev, struct kvm_device_attr *attr)
 		return ret;
 
 	vcpu = reg_attr.vcpu;
-	addr = reg_attr.addr;
 
 	if (attr->group == KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS)
 		return vgic_v5_has_cpu_sysregs_attr(vcpu, attr);

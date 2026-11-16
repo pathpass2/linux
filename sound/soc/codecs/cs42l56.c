@@ -419,7 +419,6 @@ static const struct snd_kcontrol_new cs42l56_snd_controls[] = {
 			      CS42L56_PGAB_MUX_VOLUME, 0, 0x34, 0x24, pga_tlv),
 	SOC_DOUBLE_R_TLV("ADC Volume", CS42L56_ADCA_ATTENUATOR,
 			      CS42L56_ADCB_ATTENUATOR, 0, 0x00, 1, adc_tlv),
-	SOC_DOUBLE("ADC Mute Switch", CS42L56_MISC_ADC_CTL, 2, 3, 1, 1),
 	SOC_DOUBLE("ADC Boost Switch", CS42L56_GAIN_BIAS_CTL, 3, 2, 1, 1),
 
 	SOC_DOUBLE_R_SX_TLV("Headphone Volume", CS42L56_HPA_VOLUME,
@@ -1226,7 +1225,7 @@ static int cs42l56_i2c_probe(struct i2c_client *i2c_client)
 	unsigned int alpha_rev, metal_rev;
 	unsigned int reg;
 
-	cs42l56 = devm_kzalloc(&i2c_client->dev, sizeof(*cs42l56), GFP_KERNEL);
+	cs42l56 = devm_kzalloc_obj(&i2c_client->dev, *cs42l56);
 	if (cs42l56 == NULL)
 		return -ENOMEM;
 	cs42l56->dev = &i2c_client->dev;

@@ -1752,15 +1752,16 @@ static int btf_add_type(struct btf_verifier_env *env, struct btf_type *t)
 		/* Expand 'types' array */
 
 		struct btf_type **new_types;
-		u32 expand_by, new_size;
+		u32 expand_by, new_size, max_size;
 
-		if (btf->start_id + btf->types_size == BTF_MAX_TYPE) {
+		if (btf->start_id + btf->types_size >= BTF_MAX_TYPE) {
 			btf_verifier_log(env, "Exceeded max num of types");
 			return -E2BIG;
 		}
 
+		max_size = BTF_MAX_TYPE - btf->start_id;
 		expand_by = max_t(u32, btf->types_size >> 2, 16);
-		new_size = min_t(u32, BTF_MAX_TYPE,
+		new_size = min_t(u32, max_size,
 				 btf->types_size + expand_by);
 
 		new_types = kvzalloc_objs(*new_types, new_size,
@@ -1959,13 +1960,13 @@ static int env_resolve_init(struct btf_verifier_env *env)
 	u32 *resolved_ids = NULL;
 	u8 *visit_states = NULL;
 
-	resolved_sizes = kvcalloc(nr_types, sizeof(*resolved_sizes),
-				  GFP_KERNEL | __GFP_NOWARN);
+	resolved_sizes = kvzalloc_objs(*resolved_sizes, nr_types,
+				       GFP_KERNEL | __GFP_NOWARN);
 	if (!resolved_sizes)
 		goto nomem;
 
-	resolved_ids = kvcalloc(nr_types, sizeof(*resolved_ids),
-				GFP_KERNEL | __GFP_NOWARN);
+	resolved_ids = kvzalloc_objs(*resolved_ids, nr_types,
+				     GFP_KERNEL | __GFP_NOWARN);
 	if (!resolved_ids)
 		goto nomem;
 
@@ -5871,6 +5872,7 @@ static int btf_check_all_metas(struct btf_verifier_env *env)
 	struct btf *btf = env->btf;
 	struct btf_header *hdr;
 	void *cur, *end;
+	int err;
 
 	hdr = &btf->hdr;
 	cur = btf->nohdr_data + hdr->type_off;
@@ -5885,7 +5887,10 @@ static int btf_check_all_metas(struct btf_verifier_env *env)
 		if (meta_size < 0)
 			return meta_size;
 
-		btf_add_type(env, t);
+		err = btf_add_type(env, t);
+		if (err)
+			return err;
+
 		cur += meta_size;
 		env->log_type_id++;
 	}
@@ -6583,6 +6588,15 @@ static int find_kern_ctx_type_id(enum bpf_prog_type prog_type)
 	 * Like 'struct sk_buff'
 	 */
 	return ctx_type->type;
+}
+
+/*
+ * A projection type is the view that programs have of a kernel object with
+ * another layout: see btf_is_projection_of() for the two types behind them.
+ */
+bool btf_is_projection_type(const char *pname)
+{
+	return strcmp(pname, "__sk_buff") == 0 || strcmp(pname, "xdp_md") == 0;
 }
 
 bool btf_is_projection_of(const char *pname, const char *tname)
@@ -8478,9 +8492,8 @@ static int btf_check_func_type_match(struct bpf_verifier_log *log,
 		}
 		/* This is an optional check to make program writing easier.
 		 * Compare names of structs and report an error to the user.
-		 * btf_prepare_func_args() already checked that t2 struct
-		 * is a context type. btf_prepare_func_args() will check
-		 * later that t1 struct is a context type as well.
+		 * check_ext_args() compares what btf_prepare_func_args()
+		 * derives for the two arguments.
 		 */
 		s1 = btf_name_by_offset(btf1, t1->name_off);
 		s2 = btf_name_by_offset(btf2, t2->name_off);
@@ -9013,6 +9026,11 @@ skip_pointer:
 	if (err)
 		return err;
 	sub->arg_slot_cnt = slots_used;
+
+	/* check_ext_args() needs them after env is freed */
+	if (is_global)
+		memcpy(subprog_aux(env, subprog)->args, sub->args,
+		       sizeof(subprog_aux(env, subprog)->args));
 
 	sub->args_cached = true;
 
@@ -9716,6 +9734,10 @@ static int btf_check_iter_kfuncs(struct btf *btf, const char *func_name,
 	if (!flags || (flags & (flags - 1)))
 		return -EINVAL;
 
+	if ((func_flags & KF_ITER_RET_INDEPENDENT) &&
+	    (!(flags & KF_ITER_NEXT) || (func_flags & KF_ACQUIRE)))
+		return -EINVAL;
+
 	/* any BPF iter kfunc should have `struct bpf_iter_<type> *` first arg */
 	nr_args = btf_type_vlen(func);
 	if (nr_args < 1)
@@ -9756,6 +9778,12 @@ static int btf_check_iter_kfuncs(struct btf *btf, const char *func_name,
 		t = btf_type_skip_modifiers(btf, func->type, NULL);
 		if (!t || !btf_type_is_ptr(t))
 			return -EINVAL;
+		/* The opt-out applies only to non-acquired struct results. */
+		if (func_flags & KF_ITER_RET_INDEPENDENT) {
+			t = btf_type_skip_modifiers(btf, t->type, NULL);
+			if (!t || !__btf_type_is_struct(t))
+				return -EINVAL;
+		}
 	}
 
 	if (flags & KF_ITER_DESTROY) {
@@ -9822,7 +9850,8 @@ static int btf_check_kfunc_protos(struct btf *btf, u32 func_id, u32 func_flags)
 	if (!func || !btf_type_is_func_proto(func))
 		return -EINVAL;
 
-	if (func_flags & (KF_ITER_NEW | KF_ITER_NEXT | KF_ITER_DESTROY)) {
+	if (func_flags & (KF_ITER_NEW | KF_ITER_NEXT | KF_ITER_DESTROY |
+			  KF_ITER_RET_INDEPENDENT)) {
 		err = btf_check_iter_kfuncs(btf, func_name, func, func_flags);
 		if (err)
 			return err;
